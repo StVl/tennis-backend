@@ -1,0 +1,9 @@
+# собранные бинарники
+bin/
+/tennis-server
+
+# секреты
+.env
+
+# macOS
+.DS_Store
