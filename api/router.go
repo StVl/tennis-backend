@@ -21,6 +21,10 @@ func NewRouter(pool *pgxpool.Pool) http.Handler {
 	r.Get("/health", handler.Health)
 
 	r.Route("/v1", func(r chi.Router) {
+		// композитные: один запрос = один экран (замена config.json)
+		r.Get("/home", handler.Home)
+		r.Get("/widget", handler.Widget)
+
 		// игроки
 		r.Get("/players", handler.ListPlayers)
 		r.Get("/players/{slug}", handler.GetPlayer)

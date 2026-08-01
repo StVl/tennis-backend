@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -20,14 +21,58 @@ func (h *Handler) ListPlayers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-// GetPlayer — GET /v1/players/{slug}
+// GetPlayer — GET /v1/players/{slug}?include=last_matches,next_match,next_tournament
+// include позволяет собрать детальный экран игрока одним запросом.
 func (h *Handler) GetPlayer(w http.ResponseWriter, r *http.Request) {
-	p, err := storage.GetPlayer(r.Context(), h.pool, langParam(r), chi.URLParam(r, "slug"))
+	slug := chi.URLParam(r, "slug")
+	p, err := storage.GetPlayer(r.Context(), h.pool, langParam(r), slug)
 	if err != nil {
 		respondQueryError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+
+	resp := struct {
+		*storage.PlayerDetail
+		LastMatches    []storage.PlayerMatch     `json:"last_matches,omitempty"`
+		NextMatch      *storage.PlayerMatch      `json:"next_match,omitempty"`
+		NextTournament *storage.PlayerTournament `json:"next_tournament,omitempty"`
+	}{PlayerDetail: p}
+
+	for _, inc := range strings.Split(r.URL.Query().Get("include"), ",") {
+		switch strings.TrimSpace(inc) {
+		case "":
+		case "last_matches":
+			items, err := storage.ListPlayerMatches(r.Context(), h.pool, slug, []string{"completed"}, true, 3, 0)
+			if err != nil {
+				respondQueryError(w, err)
+				return
+			}
+			resp.LastMatches = items
+		case "next_match":
+			items, err := storage.ListPlayerMatches(r.Context(), h.pool, slug, []string{"scheduled", "live"}, false, 1, 0)
+			if err != nil {
+				respondQueryError(w, err)
+				return
+			}
+			if len(items) > 0 {
+				resp.NextMatch = &items[0]
+			}
+		case "next_tournament":
+			items, err := storage.ListPlayerTournaments(r.Context(), h.pool, slug, []string{"upcoming"})
+			if err != nil {
+				respondQueryError(w, err)
+				return
+			}
+			if len(items) > 0 {
+				resp.NextTournament = &items[0]
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "bad_include",
+				"include must be of: last_matches, next_match, next_tournament")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ListPlayerMatches — GET /v1/players/{slug}/matches?status=completed&limit=3

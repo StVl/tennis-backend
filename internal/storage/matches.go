@@ -37,6 +37,7 @@ type MatchSide struct {
 type MatchPlayer struct {
 	Slug     string  `json:"slug"`
 	Name     string  `json:"name"`
+	LastName *string `json:"last_name"`
 	PhotoURL *string `json:"photo_url"`
 	Rank     *int    `json:"rank"`
 }
@@ -47,6 +48,7 @@ type flatParticipant struct {
 	Slot     int     `json:"slot"`
 	Slug     string  `json:"slug"`
 	Name     string  `json:"name"`
+	LastName *string `json:"last_name"`
 	PhotoURL *string `json:"photo_url"`
 	Rank     *int    `json:"rank"`
 }
@@ -74,7 +76,8 @@ const matchSelect = `
 	left join lateral (
 		select json_agg(json_build_object(
 		         'side', mp.side, 'slot', mp.slot, 'slug', p.slug,
-		         'name', p.display_name, 'photo_url', p.photo_url, 'rank', r.rank)
+		         'name', p.display_name, 'last_name', p.last_name,
+		         'photo_url', p.photo_url, 'rank', r.rank)
 		       order by mp.side, mp.slot) as j
 		from match_participants mp
 		join players p on p.id = mp.player_id
@@ -171,7 +174,7 @@ func scanMatch(row pgx.CollectableRow) (Match, error) {
 	bySide := map[int][]MatchPlayer{}
 	for _, fp := range flat {
 		bySide[fp.Side] = append(bySide[fp.Side], MatchPlayer{
-			Slug: fp.Slug, Name: fp.Name, PhotoURL: fp.PhotoURL, Rank: fp.Rank,
+			Slug: fp.Slug, Name: fp.Name, LastName: fp.LastName, PhotoURL: fp.PhotoURL, Rank: fp.Rank,
 		})
 	}
 	m.Sides = []MatchSide{}
