@@ -44,6 +44,19 @@ func NewRouter(pool *pgxpool.Pool) http.Handler {
 		// матчи
 		r.Get("/matches", handler.ListMatches)
 		r.Get("/matches/{id}", handler.GetMatch)
+
+		// пользователи: анонимная регистрация + зона /users/me под Bearer-токеном
+		r.Post("/users", handler.CreateUser)
+		r.Route("/users/me", func(r chi.Router) {
+			r.Use(handler.requireUser)
+			r.Get("/", handler.Me)
+			r.Get("/follows", handler.ListFollows)
+			r.Put("/follows", handler.ReplaceFollows)
+			r.Put("/follows/{slug}", handler.AddFollow)
+			r.Delete("/follows/{slug}", handler.RemoveFollow)
+			r.Get("/home", handler.MyHome)
+			r.Get("/widget", handler.MyWidget)
+		})
 	})
 
 	return r
