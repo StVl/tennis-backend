@@ -24,10 +24,12 @@ type SeasonCard struct {
 
 // GridPlayer — элемент сетки "All players" / онбординга.
 type GridPlayer struct {
-	Slug     string  `json:"slug"`
-	Name     string  `json:"name"`
-	PhotoURL *string `json:"photo_url"`
-	Followed bool    `json:"followed"`
+	Slug      string  `json:"slug"`
+	Name      string  `json:"name"`
+	PhotoURL  *string `json:"photo_url"`
+	Rank      *int    `json:"rank"`       // null, если нет свежего снапшота в v_current_rankings
+	RankDelta *int    `json:"rank_delta"` // к предыдущему снапшоту
+	Followed  bool    `json:"followed"`
 }
 
 // WidgetFeed — готовый таймлайн виджета: клиент только рендерит.
@@ -43,9 +45,9 @@ type WidgetRow struct {
 	Opponent       *Opponent  `json:"opponent,omitempty"` // null = TBD; только для match
 	TournamentName string     `json:"tournament_name"`
 	Surface        string     `json:"surface"`
-	StartAt        *time.Time `json:"start_at,omitempty"`    // match
-	StartDate      *time.Time `json:"start_date,omitempty"`  // tournament
-	EndDate        *time.Time `json:"end_date,omitempty"`    // tournament
+	StartAt        *time.Time `json:"start_at,omitempty"`   // match
+	StartDate      *time.Time `json:"start_date,omitempty"` // tournament
+	EndDate        *time.Time `json:"end_date,omitempty"`   // tournament
 	IsToday        bool       `json:"is_today"`
 }
 
@@ -144,7 +146,8 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 	for _, p := range roster {
 		rosterBySlug[p.Slug] = p
 		feed.AllPlayers = append(feed.AllPlayers, GridPlayer{
-			Slug: p.Slug, Name: p.Name, PhotoURL: p.PhotoURL, Followed: followedSet[p.Slug],
+			Slug: p.Slug, Name: p.Name, PhotoURL: p.PhotoURL,
+			Rank: p.Rank, RankDelta: p.RankDelta, Followed: followedSet[p.Slug],
 		})
 	}
 

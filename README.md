@@ -59,14 +59,15 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
     }
   ],
   "all_players": [
-    {"slug": "sinner", "name": "Jannik Sinner", "photo_url": "...", "followed": true},
+    {"slug": "sinner", "name": "Jannik Sinner", "photo_url": "...",
+     "rank": 1, "rank_delta": 0, "followed": true},
     ...все 102 игрока ростера...
   ]
 }
 ```
 
 - `your_season` — карточки подписанных в порядке `player_ids`; у каждой ближайший матч, а если его нет — ближайший турнир (`next_tournament` заполняется только при `next_match: null`).
-- `all_players` — **всегда весь ростер** с флагом `followed` (эхо переданного списка). Пустой `player_ids` → пустой `your_season` + полная сетка: режим онбординга.
+- `all_players` — **всегда весь ростер** с флагом `followed` (эхо переданного списка), отсортирован по рейтингу; `rank`/`rank_delta` могут быть `null`, если нет свежего снапшота. Пустой `player_ids` → пустой `your_season` + полная сетка: режим онбординга.
 
 ### `GET /v1/widget?player_ids=...&tz=Europe/Belgrade`
 
