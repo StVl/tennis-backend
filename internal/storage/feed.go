@@ -34,7 +34,7 @@ type GridPlayer struct {
 
 // WidgetFeed — готовый таймлайн виджета: клиент только рендерит.
 type WidgetFeed struct {
-	State       string       `json:"state"` // rows | split | no_follows | no_matches
+	State       string       `json:"state"` // rows | same_tournament | split | no_follows | no_matches
 	Rows        []WidgetRow  `json:"rows"`
 	TodayColumn []TodayMatch `json:"today_column,omitempty"` // только для state=split
 }
@@ -215,6 +215,9 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 	type slot struct {
 		row  WidgetRow
 		when time.Time
+		// Слаг розыгрыша — ключ склейки для state=same_tournament. Наружу не отдаётся:
+		// решение принимает сервер, клиент только рисует.
+		edition string
 	}
 	var slots []slot
 	for _, slug := range followed {
@@ -229,7 +232,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 				when = *m.ScheduledAt
 				isToday = !m.ScheduledAt.Before(dayFrom) && m.ScheduledAt.Before(dayTo)
 			}
-			slots = append(slots, slot{when: when, row: WidgetRow{
+			slots = append(slots, slot{when: when, edition: m.Edition, row: WidgetRow{
 				Type: "match", Player: hdr, Opponent: m.Opponent,
 				TournamentName: m.TournamentName, Surface: m.Surface,
 				StartAt: m.ScheduledAt, IsToday: isToday,
@@ -237,7 +240,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 			}})
 		} else if t, ok := nextTournaments[slug]; ok {
 			start, end := t.StartDate, t.EndDate
-			slots = append(slots, slot{when: start, row: WidgetRow{
+			slots = append(slots, slot{when: start, edition: t.Edition, row: WidgetRow{
 				Type: "tournament", Player: hdr,
 				TournamentName: t.TournamentName, Surface: t.Surface,
 				StartDate: &start, EndDate: &end,
@@ -298,9 +301,42 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 		}
 	}
 
+	// split проверяется раньше склейки: он про «сегодня», а склейка — про афишу, и матчи одного
+	// розыгрыша в один день делают followedPlaysToday истинным, так что пересечься они могут только
+	// на будущем дне, где полезнее колонка TODAY.
 	if !followedPlaysToday && len(todayColumn) > 0 {
 		return &WidgetFeed{State: "split", Rows: rows, TodayColumn: todayColumn}, nil
 	}
+
+	// same_tournament: 2–3 подписки в одном розыгрыше — виджет рисует афишу турнира вместо списка.
+	// Матчам нужен ещё и общий локальный день: два матча одного турнира в разные дни — это список.
+	if len(slots) >= 2 && slots[0].edition != "" {
+		same, day := true, ""
+		for _, s := range slots {
+			if s.edition != slots[0].edition || s.row.Type != slots[0].row.Type {
+				same = false
+				break
+			}
+			if s.row.Type != "match" {
+				continue
+			}
+			if s.row.StartAt == nil {
+				same = false
+				break
+			}
+			d := s.row.StartAt.In(loc).Format("2006-01-02")
+			if day == "" {
+				day = d
+			} else if d != day {
+				same = false
+				break
+			}
+		}
+		if same {
+			return &WidgetFeed{State: "same_tournament", Rows: rows}, nil
+		}
+	}
+
 	return &WidgetFeed{State: "rows", Rows: rows}, nil
 }
 
