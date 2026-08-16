@@ -78,9 +78,11 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
   "state": "rows | split | no_follows | no_matches",
   "rows": [
     {"type": "match", "player": {...}, "opponent": {...}, "tournament_name": "US Open",
-     "surface": "hard", "start_at": "2026-08-31T18:00:00Z", "is_today": false},
+     "surface": "hard", "start_at": "2026-08-31T18:00:00Z", "is_today": false,
+     "round": "QF", "is_live": false},
     {"type": "tournament", "player": {...}, "tournament_name": "...",
-     "surface": "clay", "start_date": "...", "end_date": "...", "is_today": false}
+     "surface": "clay", "start_date": "...", "end_date": "...", "is_today": false,
+     "is_live": false, "location": "Rome"}
   ],
   "today_column": [
     {"p1_last_name": "Shelton", "p2_last_name": "Tabilo", "start_at": "..."}
@@ -92,7 +94,9 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - слот на каждого подписанного: ближайший scheduled/live матч, иначе ближайший upcoming-турнир; сортировка по дате, максимум 3 строки;
 - `no_follows` — пустые подписки; `no_matches` — подписки есть, событий нет;
 - `split` — когда **ни один** подписанный не играет сегодня, но сегодня есть матчи не-подписанных: `today_column` содержит до 5 матчей, отсортированных по лучшему текущему рейтингу участника;
-- «сегодня» считается в `tz`; `is_today` проставлен у матчей-строк.
+- «сегодня» считается в `tz`; `is_today` проставлен у матчей-строк;
+- `round` (`R128`…`F`) и `is_live` — только у `type: "match"`: виджет клеит раунд к покрытию («QF · Grunt») и показывает бейдж LIVE. `round` опускается, если у матча нет кода раунда; `is_live` присутствует всегда и у строки-турнира равен `false`;
+- `location` — только у `type: "tournament"`: город **бренда** турнира (`tournaments.location`), опускается, если не заполнен. Тот же источник, что `location` в `/v1/tournaments`.
 
 ## Игроки
 
@@ -109,7 +113,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 Матчи **глазами игрока**: `opponent`, `result` (won/lost), `score_text` со стороны игрока. `status` — CSV из `scheduled,live,completed,cancelled` (default все). Только `status=completed` → новые сверху, иначе ближайшие сверху.
 
 ### `GET /v1/players/{slug}/tournaments?status=upcoming,ongoing`
-Турниры, на которые игрок заявлен: розыгрыш, даты, покрытие, посев. `status` — CSV из `upcoming,ongoing,completed`.
+Турниры, на которые игрок заявлен: розыгрыш, даты, покрытие, посев, город (`location`). `status` — CSV из `upcoming,ongoing,completed`.
 
 ### `GET /v1/players/{slug}/ranking-history`
 Снапшоты рейтинга по датам: `rank`, `points`, `race_points` (под график).

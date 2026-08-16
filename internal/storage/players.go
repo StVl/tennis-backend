@@ -78,6 +78,9 @@ type PlayerTournament struct {
 	Surface        string    `json:"surface"`
 	Status         string    `json:"status"`
 	Seed           *int      `json:"seed"`
+	// Город бренда турнира (tournaments.location), не розыгрыша — тот же источник,
+	// что и `location` в /v1/tournaments. Null, если не заполнен.
+	Location *string `json:"location"`
 }
 
 // RankingSnapshot — точка истории рейтинга.
@@ -198,7 +201,7 @@ func ListPlayerMatches(ctx context.Context, pool *pgxpool.Pool, slug string, sta
 
 func scanPlayerMatch(row pgx.CollectableRow) (PlayerMatch, error) {
 	var (
-		m                            PlayerMatch
+		m                             PlayerMatch
 		oppSlug, oppName, oppPhotoURL *string
 	)
 	err := row.Scan(&m.MatchID, &m.Round, &m.ScheduledAt, &m.Status,
@@ -216,7 +219,7 @@ func scanPlayerMatch(row pgx.CollectableRow) (PlayerMatch, error) {
 
 func ListPlayerTournaments(ctx context.Context, pool *pgxpool.Pool, slug string, statuses []string) ([]PlayerTournament, error) {
 	rows, err := pool.Query(ctx, `
-		select v.slug, t.name, v.start_date, v.end_date, v.surface::text, v.status, e.seed
+		select v.slug, t.name, v.start_date, v.end_date, v.surface::text, v.status, e.seed, t.location
 		from tournament_entries e
 		join v_tournament_editions v on v.id = e.edition_id
 		join tournaments t on t.id = v.tournament_id
@@ -229,7 +232,7 @@ func ListPlayerTournaments(ctx context.Context, pool *pgxpool.Pool, slug string,
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlayerTournament, error) {
 		var t PlayerTournament
-		err := row.Scan(&t.Edition, &t.TournamentName, &t.StartDate, &t.EndDate, &t.Surface, &t.Status, &t.Seed)
+		err := row.Scan(&t.Edition, &t.TournamentName, &t.StartDate, &t.EndDate, &t.Surface, &t.Status, &t.Seed, &t.Location)
 		return t, err
 	})
 }

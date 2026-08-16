@@ -49,6 +49,13 @@ type WidgetRow struct {
 	StartDate      *time.Time `json:"start_date,omitempty"` // tournament
 	EndDate        *time.Time `json:"end_date,omitempty"`   // tournament
 	IsToday        bool       `json:"is_today"`
+	// Код раунда (R128…F) — только для match. Виджет клеит его к покрытию: «QF · Grunt».
+	Round string `json:"round,omitempty"`
+	// Матч идёт прямо сейчас (status = live). Не omitempty: клиент ждёт ключ всегда,
+	// а у строки-турнира честное false.
+	IsLive bool `json:"is_live"`
+	// Город турнира — только для tournament. Null, если у бренда не заполнен.
+	Location *string `json:"location,omitempty"`
 }
 
 // TodayMatch — карточка в колонке TODAY: только фамилии.
@@ -103,7 +110,8 @@ func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string)
 func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string) (map[string]PlayerTournament, error) {
 	rows, err := pool.Query(ctx, `
 		select distinct on (pl.slug)
-		       pl.slug, v.slug, t.name, v.start_date, v.end_date, v.surface::text, v.status, e.seed
+		       pl.slug, v.slug, t.name, v.start_date, v.end_date, v.surface::text, v.status, e.seed,
+		       t.location
 		from tournament_entries e
 		join players pl on pl.id = e.player_id
 		join v_tournament_editions v on v.id = e.edition_id
@@ -121,7 +129,7 @@ func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []st
 			t    PlayerTournament
 		)
 		if err := rows.Scan(&slug, &t.Edition, &t.TournamentName, &t.StartDate, &t.EndDate,
-			&t.Surface, &t.Status, &t.Seed); err != nil {
+			&t.Surface, &t.Status, &t.Seed, &t.Location); err != nil {
 			return nil, err
 		}
 		out[slug] = t
@@ -225,6 +233,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 				Type: "match", Player: hdr, Opponent: m.Opponent,
 				TournamentName: m.TournamentName, Surface: m.Surface,
 				StartAt: m.ScheduledAt, IsToday: isToday,
+				Round: m.Round, IsLive: m.Status == "live",
 			}})
 		} else if t, ok := nextTournaments[slug]; ok {
 			start, end := t.StartDate, t.EndDate
@@ -232,6 +241,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 				Type: "tournament", Player: hdr,
 				TournamentName: t.TournamentName, Surface: t.Surface,
 				StartDate: &start, EndDate: &end,
+				Location: t.Location,
 			}})
 		}
 	}
