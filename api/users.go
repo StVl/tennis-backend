@@ -133,7 +133,9 @@ func (h *Handler) MyHome(w http.ResponseWriter, r *http.Request) {
 		respondQueryError(w, err)
 		return
 	}
-	feed, err := storage.GetHomeFeed(r.Context(), h.pool, langParam(r), followed)
+	feed, err := storage.GetHomeFeed(
+		r.Context(), h.pool, langParam(r), followed, highlightsDaysParam(r),
+	)
 	if err != nil {
 		respondQueryError(w, err)
 		return

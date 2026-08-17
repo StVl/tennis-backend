@@ -27,10 +27,18 @@ func playerIDsParam(r *http.Request) []string {
 	return out
 }
 
-// Home — GET /v1/home?player_ids=...&lang=
-// Главный экран одним запросом: карточки подписок + полная сетка ростера.
+// highlightsDaysParam — ширина окна «итогов недели», ?highlights_days=. По умолчанию 7; 0
+// выключает блок. Потолок в год: окно шире — это уже не итоги недели, а история.
+func highlightsDaysParam(r *http.Request) int {
+	return intParam(r, "highlights_days", 7, 365)
+}
+
+// Home — GET /v1/home?player_ids=...&lang=&highlights_days=
+// Главный экран одним запросом: карточки подписок + полная сетка ростера + итоги недели.
 func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
-	feed, err := storage.GetHomeFeed(r.Context(), h.pool, langParam(r), playerIDsParam(r))
+	feed, err := storage.GetHomeFeed(
+		r.Context(), h.pool, langParam(r), playerIDsParam(r), highlightsDaysParam(r),
+	)
 	if err != nil {
 		respondQueryError(w, err)
 		return

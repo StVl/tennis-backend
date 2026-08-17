@@ -13,6 +13,9 @@ import (
 type HomeFeed struct {
 	YourSeason []SeasonCard `json:"your_season"`
 	AllPlayers []GridPlayer `json:"all_players"`
+	// Итоги недели у подписок: завершённые матчи, важные раунды сверху. Нейтральная форма
+	// матча — карточка показывает обоих игроков и счёт по сетам, а не «мой игрок против».
+	WeeklyHighlights []Match `json:"weekly_highlights"`
 }
 
 // SeasonCard — большая карточка подписанного игрока.
@@ -137,8 +140,38 @@ func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []st
 	return out, rows.Err()
 }
 
-// GetHomeFeed собирает главный экран: карточки подписок + полная сетка ростера.
-func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string) (*HomeFeed, error) {
+// weeklyHighlightsLimit — сколько карточек отдаём: столько же, сколько показывал старый клиент.
+const weeklyHighlightsLimit = 5
+
+// weeklyHighlights — завершённые матчи подписок за последние `days` дней.
+//
+// Порядок — правило экрана, поэтому оно здесь: сначала важные раунды (`rounds.sort_order`, тот же
+// столбец, по которому строится сетка), внутри раунда — свежие. Клиенту остаётся отрисовать.
+//
+// Матч двух подписок попадает в выдачу один раз: форма нейтральная, а не «глазами игрока».
+func weeklyHighlights(ctx context.Context, pool *pgxpool.Pool, followed []string, since time.Time) ([]Match, error) {
+	rows, err := pool.Query(ctx, matchSelect+`
+		left join rounds ro on ro.code = m.round_code
+		where m.status::text = 'completed'
+		  and m.scheduled_at >= $2
+		  and exists (select 1 from match_participants mp2
+		              join players p2 on p2.id = mp2.player_id
+		              where mp2.match_id = m.id and p2.slug = any($1))
+		order by ro.sort_order desc nulls last, m.scheduled_at desc nulls last, m.id desc
+		limit $3`,
+		followed, since, weeklyHighlightsLimit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanMatch)
+}
+
+// GetHomeFeed собирает главный экран: карточки подписок + полная сетка ростера + итоги недели.
+//
+// `highlightDays` — ширина окна итогов; 0 выключает блок. Параметр, а не константа, потому что
+// «последние 7 дней» — правильная семантика, но пустая на снапшоте базы, который отстал: с
+// `?highlights_days=` секцию видно в разработке, не подменяя смысл в проде.
+func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string, highlightDays int) (*HomeFeed, error) {
 	roster, err := ListPlayers(ctx, pool, lang, true, "")
 	if err != nil {
 		return nil, err
@@ -149,7 +182,11 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		followedSet[s] = true
 	}
 
-	feed := &HomeFeed{YourSeason: []SeasonCard{}, AllPlayers: make([]GridPlayer, 0, len(roster))}
+	feed := &HomeFeed{
+		YourSeason:       []SeasonCard{},
+		AllPlayers:       make([]GridPlayer, 0, len(roster)),
+		WeeklyHighlights: []Match{},
+	}
 	rosterBySlug := map[string]PlayerListItem{}
 	for _, p := range roster {
 		rosterBySlug[p.Slug] = p
@@ -184,6 +221,16 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 			card.NextTournament = &t
 		}
 		feed.YourSeason = append(feed.YourSeason, card)
+	}
+
+	if highlightDays > 0 {
+		highlights, err := weeklyHighlights(ctx, pool, followed, time.Now().AddDate(0, 0, -highlightDays))
+		if err != nil {
+			return nil, err
+		}
+		if highlights != nil {
+			feed.WeeklyHighlights = highlights
+		}
 	}
 	return feed, nil
 }
