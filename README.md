@@ -44,7 +44,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 
 Замена config.json: приложение и виджет получают готовую выдачу одним запросом. До появления серверных подписок клиент передаёт их сам через `?player_ids=` (из App Group); авторизованные варианты с подписками из БД — в разделе «Пользователи».
 
-### `GET /v1/home?player_ids=sinner,alcaraz&lang=en`
+### `GET /v1/home?player_ids=sinner,alcaraz&lang=en&highlights_days=7`
 
 Главный экран целиком:
 
@@ -62,12 +62,18 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
     {"slug": "sinner", "name": "Jannik Sinner", "photo_url": "...",
      "rank": 1, "rank_delta": 0, "followed": true},
     ...все 102 игрока ростера...
+  ],
+  "weekly_highlights": [
+    { ...нейтральная форма матча, как в /v1/matches: sides, sets, score_text... }
   ]
 }
 ```
 
 - `your_season` — карточки подписанных в порядке `player_ids`; у каждой ближайший матч, а если его нет — ближайший турнир (`next_tournament` заполняется только при `next_match: null`).
 - `all_players` — **всегда весь ростер** с флагом `followed` (эхо переданного списка), отсортирован по рейтингу; `rank`/`rank_delta` могут быть `null`, если нет свежего снапшота. Пустой `player_ids` → пустой `your_season` + полная сетка: режим онбординга.
+- `weekly_highlights` — до 5 **завершённых** матчей подписок за последние `highlights_days` дней (по умолчанию 7, максимум 365, `0` выключает блок). Порядок — правило экрана и потому серверное: сначала важные раунды (`rounds.sort_order`, тот же столбец, по которому строится сетка), внутри раунда — свежие. Форма нейтральная (`sides` + `sets` + `score_text`), так что матч двух подписок попадает в выдачу один раз, а карточка рисует обоих игроков и счёт по сетам без разбора строки. Пустых подписок → пустой массив, никогда `null`.
+
+  Параметр окна нужен потому, что «последние 7 дней» — правильная семантика, но на отставшем снапшоте базы блок пуст: `?highlights_days=60` показывает секцию в разработке, не меняя смысл в проде.
 
 ### `GET /v1/widget?player_ids=...&tz=Europe/Belgrade`
 
@@ -197,7 +203,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 | `PUT` | `/v1/users/me/follows` | заменить весь список: `{"player_slugs": ["sinner", ...]}` (онбординг). Ответ: итоговый список + `unknown_slugs` |
 
 ### `GET /v1/users/me/home` и `GET /v1/users/me/widget?tz=`
-Те же `home`/`widget`, но подписки берутся из БД (порядок = порядок добавления). Формат ответов идентичен публичным вариантам.
+Те же `home`/`widget`, но подписки берутся из БД (порядок = порядок добавления). Формат ответов идентичен публичным вариантам, включая `weekly_highlights` и `?highlights_days=`.
 
 Пример полного флоу:
 
