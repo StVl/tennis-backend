@@ -225,6 +225,7 @@ func ListPlayerTournaments(ctx context.Context, pool *pgxpool.Pool, slug string,
 		join tournaments t on t.id = v.tournament_id
 		where e.player_id = (select id from players where slug = $1)
 		  and v.status = any($2)
+		  and e.status is distinct from 'withdrawn'
 		order by v.start_date`,
 		slug, statuses)
 	if err != nil {

@@ -120,6 +120,7 @@ func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []st
 		join v_tournament_editions v on v.id = e.edition_id
 		join tournaments t on t.id = v.tournament_id
 		where pl.slug = any($1) and v.status = 'upcoming'
+		  and e.status is distinct from 'withdrawn'
 		order by pl.slug, v.start_date asc`,
 		slugs)
 	if err != nil {
