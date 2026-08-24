@@ -134,10 +134,18 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 Розыгрыши. Статус **вычисляется из дат** на сервере. Поля: слаги розыгрыша и турнира, название, даты, покрытие, локация, лого, чемпион/финалист (у завершённых).
 
 ### `GET /v1/tournaments/{edition_slug}`
-Карточка розыгрыша (`wimbledon_2026`): описание, условия (`conditions`: зал, высокогорье...), draw_size, призовой фонд, чемпион/финалист + `entries` — заявленные игроки с посевом и текущим рейтингом.
+Карточка розыгрыша (`cincinnati_2026`) — один ответ на экран:
+
+- шапка: имя, описание, покрытие, `date_range` («13 – 23 Aug»), `location`, `country_code`;
+- `draw_status`: `awaiting_draw` | `drawn`; `draw_date` — дата жеребьёвки;
+- `court_image_url` — фото корта по покрытию (`hard` / `clay` / `grass`);
+- `rounds` — сетка слотами `top` / `bottom`: имя «C. Alcaraz», `flag`, `seed`, `winner`, `tbd`, `bracket_pos`;
+- `entries` — заявочный лист (как раньше).
+
+При `awaiting_draw` `rounds` — пустой массив. `/draw` остаётся нейтральной формой матча для других клиентов.
 
 ### `GET /v1/tournaments/{edition_slug}/draw`
-Сетка: `{"rounds": [{"round": "QF", "label": "Quarterfinal", "matches": [...]}]}` — раунды в турнирном порядке (R1 → F), внутри по позиции в сетке.
+Сетка в форме матчей: `{"rounds": [{"round": "QF", "label": "Quarterfinal", "matches": [...]}]}` — раунды в турнирном порядке (R1 → F), внутри по `bracket_pos`.
 
 ### `GET /v1/tournaments/{tournament_slug}/history`
 История розыгрышей **бренда** (`wimbledon`) по годам: чемпион и финалист каждого года.

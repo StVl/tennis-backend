@@ -11,18 +11,18 @@ import (
 
 // EditionListItem — розыгрыш в списках (будущие/текущие/прошедшие).
 type EditionListItem struct {
-	Edition        string     `json:"edition"`
-	Tournament     string     `json:"tournament"`
-	Name           string     `json:"name"`
-	Year           int        `json:"year"`
-	StartDate      time.Time  `json:"start_date"`
-	EndDate        time.Time  `json:"end_date"`
-	Surface        string     `json:"surface"`
-	Status         string     `json:"status"`
-	Location       *string    `json:"location"`
-	LogoURL        *string    `json:"logo_url"`
-	Champion       *Opponent  `json:"champion"`
-	RunnerUp       *Opponent  `json:"runner_up"`
+	Edition    string    `json:"edition"`
+	Tournament string    `json:"tournament"`
+	Name       string    `json:"name"`
+	Year       int       `json:"year"`
+	StartDate  time.Time `json:"start_date"`
+	EndDate    time.Time `json:"end_date"`
+	Surface    string    `json:"surface"`
+	Status     string    `json:"status"`
+	Location   *string   `json:"location"`
+	LogoURL    *string   `json:"logo_url"`
+	Champion   *Opponent `json:"champion"`
+	RunnerUp   *Opponent `json:"runner_up"`
 }
 
 // EditionDetail — карточка розыгрыша.
@@ -33,7 +33,37 @@ type EditionDetail struct {
 	DrawSize      *int            `json:"draw_size"`
 	PrizeMoney    *int64          `json:"prize_money"`
 	PrizeCurrency *string         `json:"prize_currency"`
+	DrawDate      *time.Time      `json:"draw_date"`
+	DrawStatus    string          `json:"draw_status"`
+	CountryCode   *string         `json:"country_code"`
+	DateRange     string          `json:"date_range"`
+	CourtImageURL *string         `json:"court_image_url"`
+	Rounds        []DrawCardRound `json:"rounds"`
 	Entries       []EditionEntry  `json:"entries"`
+}
+
+// DrawCardRound — раунд основной сетки для карточки турнира.
+type DrawCardRound struct {
+	Code    string          `json:"code"`
+	Title   string          `json:"title"`
+	Matches []DrawCardMatch `json:"matches"`
+}
+
+type DrawCardMatch struct {
+	ID         int64    `json:"id"`
+	BracketPos *int     `json:"bracket_pos"`
+	Top        DrawSlot `json:"top"`
+	Bottom     DrawSlot `json:"bottom"`
+}
+
+// DrawSlot — одна сторона вилки. tbd=true, если игрока ещё нет.
+type DrawSlot struct {
+	Name   string  `json:"name"`
+	Slug   *string `json:"slug"`
+	Flag   *string `json:"flag"`
+	Seed   *int    `json:"seed"`
+	Winner bool    `json:"winner"`
+	TBD    bool    `json:"tbd"`
 }
 
 type EditionEntry struct {
@@ -73,9 +103,9 @@ const editionSelect = `
 
 func scanEdition(row pgx.CollectableRow) (EditionListItem, error) {
 	var (
-		e                        EditionListItem
-		chSlug, chName, chPhoto  *string
-		ruSlug, ruName, ruPhoto  *string
+		e                       EditionListItem
+		chSlug, chName, chPhoto *string
+		ruSlug, ruName, ruPhoto *string
 	)
 	err := row.Scan(&e.Edition, &e.Tournament, &e.Name, &e.Year, &e.StartDate, &e.EndDate,
 		&e.Surface, &e.Status, &e.Location, &e.LogoURL,
@@ -110,7 +140,8 @@ func GetEdition(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug strin
 		       ch.slug, ch.display_name, ch.photo_url,
 		       ru.slug, ru.display_name, ru.photo_url,
 		       coalesce(t.description->>$2, t.description->>'en', t.description->>'ru'),
-		       t.conditions::text, v.draw_size, v.prize_money::bigint, v.prize_currency
+		       t.conditions::text, v.draw_size, v.prize_money::bigint, v.prize_currency,
+		       v.draw_date, v.draw_status::text, t.country_code
 		from v_tournament_editions v
 		join tournaments t on t.id = v.tournament_id
 		left join players ch on ch.id = v.champion_id
@@ -130,7 +161,8 @@ func GetEdition(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug strin
 		err := row.Scan(&d.Edition, &d.Tournament, &d.Name, &d.Year, &d.StartDate, &d.EndDate,
 			&d.Surface, &d.Status, &d.Location, &d.LogoURL,
 			&chSlug, &chName, &chPhoto, &ruSlug, &ruName, &ruPhoto,
-			&desc, &conds, &d.DrawSize, &d.PrizeMoney, &d.PrizeCurrency)
+			&desc, &conds, &d.DrawSize, &d.PrizeMoney, &d.PrizeCurrency,
+			&d.DrawDate, &d.DrawStatus, &d.CountryCode)
 		if err != nil {
 			return d, err
 		}
@@ -171,6 +203,18 @@ func GetEdition(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug strin
 	})
 	if err != nil {
 		return nil, err
+	}
+	d.DateRange = formatDateRange(d.StartDate, d.EndDate)
+	d.CourtImageURL = courtImageURL(d.Surface)
+	d.Rounds = []DrawCardRound{}
+	if d.DrawStatus == "drawn" {
+		d.Rounds, err = loadDrawCard(ctx, pool, lang, editionSlug)
+		if err != nil {
+			return nil, err
+		}
+		if d.Rounds == nil {
+			d.Rounds = []DrawCardRound{}
+		}
 	}
 	return &d, nil
 }
