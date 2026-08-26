@@ -43,6 +43,16 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		return nil
 	}
 
+	// Подбираем прогоны, которых никто не закрыл: SIGKILL посреди цикла
+	// оставляет finished_at пустым навсегда, а на «последний успешный прогон»
+	// опирается STALE-SAFE.
+	if swept, err := storage.SweepAbandonedRuns(ctx, u.pool, u.Name(),
+		time.Now().Add(-2*u.cfg.UpdateTimeout)); err != nil {
+		slog.Error("live-schedule: sweeping abandoned runs failed", "error", err)
+	} else if swept > 0 {
+		slog.Warn("live-schedule: closed abandoned runs", "count", swept)
+	}
+
 	// Свой ключ блокировки: медленное обновление расписания не должно
 	// блокировать опрос.
 	lock, acquired, err := storage.AcquireLiveLock(ctx, u.pool, storage.LiveLockSchedule)
@@ -50,6 +60,9 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		return fmt.Errorf("acquire schedule lock: %w", err)
 	}
 	if !acquired {
+		// Оставляем след: заклинившая блокировка иначе выглядит ровно как
+		// здоровый пропуск, а live_ingest_runs — единственное окно в причины.
+		u.recordSkip(ctx, "lock_held")
 		slog.Info("live-schedule: another instance holds the lock, skipping")
 		return nil
 	}
@@ -78,8 +91,28 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 	// расширяет окно наблюдения, а пустое расписание уложило бы Job B спать
 	// на восемь часов без единой ошибки в логах. Данные и статус прогона
 	// расходятся намеренно — не «исправлять».
+	//
+	// Фильтр по своим игрокам избыточен, пока вендор honours повторяемый
+	// player=, и ровно поэтому он дешёвая страховка. Если фильтр однажды
+	// перестанет применяться (переименование параметра, Set вместо Add,
+	// изменение на стороне вендора), без этой проверки Job A принял бы за
+	// «наше расписание» весь борт upcoming — 309 строк в снятом срезе — и
+	// Job B считал бы, что смотреть надо всегда: вечный WATCHING, квота
+	// выедается каждый день, и ни одной ошибки нигде.
+	tracked := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		tracked[k] = struct{}{}
+	}
+
 	rows := make([]storage.ScheduleRow, 0, len(page.Fixtures))
+	foreign := 0
 	for _, f := range page.Fixtures {
+		if _, ok := tracked[f.PlayerKeys[0]]; !ok {
+			if _, ok := tracked[f.PlayerKeys[1]]; !ok {
+				foreign++
+				continue
+			}
+		}
 		rows = append(rows, storage.ScheduleRow{
 			ExternalKey:   f.ExternalKey,
 			TournamentKey: f.TournamentKey,
@@ -89,17 +122,25 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 			PlayerKeys:    f.PlayerKeys[:],
 		})
 	}
+	if foreign > 0 {
+		slog.Warn("live-schedule: fixtures without a tracked player were dropped; "+
+			"the vendor's player= filter may have stopped applying",
+			"dropped", foreign, "kept", len(rows))
+	}
 
 	// Чистим только заведомо прошедшее. Не «всё, чего не было в этом прогоне»:
 	// выдача upcoming теряет матч в момент выхода на корт, и такая чистка
 	// стёрла бы окно ровно у идущего матча.
 	keepBefore := startedAt.Add(-2 * u.cfg.WatchTail)
+	staleRefresh := startedAt.Add(-48 * time.Hour)
 	upserted, pruned, err := storage.UpsertSchedule(
-		ctx, u.pool, livesource.SourceName, rows, startedAt, keepBefore)
+		ctx, u.pool, livesource.SourceName, rows, startedAt, keepBefore, staleRefresh)
 
 	result := storage.RunResult{
-		RowsParsed:  intPtr(page.RowsParsed),
-		RowsInScope: intPtr(len(page.Fixtures)),
+		RowsParsed:            intPtr(page.RowsParsed),
+		RowsInScope:           intPtr(len(rows)),
+		RowsDroppedUnresolved: intPtr(foreign),
+		Mode:                  "refresh",
 	}
 	switch {
 	case fetchErr != nil:
@@ -119,20 +160,33 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 	}
 
 	withoutTime := 0
-	for _, f := range page.Fixtures {
+	for _, f := range rows {
 		if f.ScheduledAt == nil {
 			withoutTime++
 		}
 	}
 	slog.Info("live-schedule: updated",
 		"players", len(keys), "rows_parsed", page.RowsParsed,
-		"upserted", upserted, "pruned", pruned,
+		"upserted", upserted, "pruned", pruned, "foreign", foreign,
 		"doubles", page.RowsDoubles, "cancelled", page.RowsCancelled,
 		"unusable", page.RowsUnusable,
 		// Фикстура без времени окна наблюдения не открывает — это видно здесь,
 		// а не выясняется потом по отсутствию карточек.
 		"without_start_time", withoutTime)
 	return nil
+}
+
+// recordSkip оставляет строку прогона для тика, который ничего не потратил.
+func (u *ScheduleUpdater) recordSkip(ctx context.Context, reason string) {
+	runID, _, err := storage.StartRun(ctx, u.pool, u.Name(), livesource.SourceName)
+	if err != nil {
+		slog.Error("live-schedule: failed to record a skipped run", "error", err)
+		return
+	}
+	if err := storage.FinishRun(ctx, u.pool, runID,
+		storage.RunResult{SkippedReason: reason}); err != nil {
+		slog.Error("live-schedule: failed to close a skipped run", "error", err)
+	}
 }
 
 func intPtr(v int) *int { return &v }

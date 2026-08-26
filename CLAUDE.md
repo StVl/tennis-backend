@@ -7,10 +7,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 go build ./...                                   # compile
 go vet ./...
+go test ./...                                    # unit tests only — DB-backed ones SKIP
+TEST_DATABASE_URL="postgresql://tennis:tennis@localhost:55432/tennis" go test ./...   # all of them
 DATABASE_URL="postgresql://..." go run ./cmd/server   # DATABASE_URL is mandatory, no default
+RUN_ONCE=live-schedule ... go run ./cmd/server    # run one cron job and exit
 ```
 
-`go test ./...` runs the suite (`-race` is clean). Tests live beside the code they cover — currently `internal/scheduler` and `internal/livesource`; run one with `go test ./internal/scheduler -run TestName`. Pure logic is deliberately kept out of closures and SQL so it can be tested without a DB or network.
+**`TEST_DATABASE_URL` matters.** Without it `go test ./...` is green but silently skips every DB-backed test — including the four covering the advisory-lock hazard, which is the highest-risk code in the live ingester. Green without it does not mean the suite ran.
+
+`go test ./...` runs the suite (`-race` is clean). Tests live beside the code they cover — `internal/scheduler`, `internal/livesource`, `internal/storage`, `internal/updater/live`; run one with `go test ./internal/scheduler -run TestName`. Pure logic is deliberately kept out of closures and SQL so it can be tested without a DB or network.
 
 `gofmt -l .` currently reports drift in `internal/storage/tournaments.go` (misaligned `var`/struct blocks). Format files you touch; don't reformat the rest as drive-by noise.
 

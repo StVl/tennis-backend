@@ -177,8 +177,12 @@ func TestUpsertScheduleIsIncremental(t *testing.T) {
 	rows := []ScheduleRow{
 		{ExternalKey: "a", ScheduledAt: &soon, PlayerKeys: []string{"1", "2"}, RoundCode: "R16"},
 		{ExternalKey: "b", ScheduledAt: &old, PlayerKeys: []string{"3", "4"}},
+		// без времени начала: окна не открывает, но и накапливаться вечно
+		// не должна — чистится по refreshed_at
+		{ExternalKey: "c", ScheduledAt: nil, PlayerKeys: []string{"5", "6"}},
 	}
-	if _, _, err := UpsertSchedule(ctx, pool, source, rows, now, now.Add(-50*time.Hour)); err != nil {
+	staleRefresh := now.Add(-48 * time.Hour)
+	if _, _, err := UpsertSchedule(ctx, pool, source, rows, now, now.Add(-50*time.Hour), staleRefresh); err != nil {
 		t.Fatalf("UpsertSchedule: %v", err)
 	}
 
@@ -187,16 +191,35 @@ func TestUpsertScheduleIsIncremental(t *testing.T) {
 		`select count(*) from live_schedule where source = $1`, source).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	// "b" вставилась и тут же попала под чистку прошлого
-	if count != 1 {
-		t.Fatalf("строк %d, ожидалась 1 (давняя фикстура должна быть подчищена)", count)
+	// "b" вставилась и тут же попала под чистку прошлого; "c" свежая и остаётся
+	if count != 2 {
+		t.Fatalf("строк %d, ожидалось 2 (давняя фикстура подчищена, безвременная жива)", count)
+	}
+
+	// Теперь делаем безвременную строку старой по refreshed_at: без этой ветки
+	// чистки такие строки жили бы в расписании вечно.
+	if _, err := pool.Exec(ctx,
+		`update live_schedule set refreshed_at = $2 where source = $1 and external_key = 'c'`,
+		source, now.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := UpsertSchedule(ctx, pool, source, nil, now, now.Add(-50*time.Hour), staleRefresh); err != nil {
+		t.Fatalf("UpsertSchedule (чистка): %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`select count(*) from live_schedule where source = $1 and external_key = 'c'`,
+		source).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Error("строка без scheduled_at не подчищается и будет копиться вечно")
 	}
 
 	// повторный upsert той же строки с новым временем — обновление, не дубль
 	later := now.Add(5 * time.Hour)
 	rows[0].ScheduledAt = &later
 	rows[0].RoundCode = "QF"
-	if _, _, err := UpsertSchedule(ctx, pool, source, rows[:1], now, now.Add(-50*time.Hour)); err != nil {
+	if _, _, err := UpsertSchedule(ctx, pool, source, rows[:1], now, now.Add(-50*time.Hour), staleRefresh); err != nil {
 		t.Fatalf("повторный UpsertSchedule: %v", err)
 	}
 

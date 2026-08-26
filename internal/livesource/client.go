@@ -48,14 +48,16 @@ type RetryPolicy struct {
 }
 
 func defaultRetryPolicy() RetryPolicy {
-	// Детерминированный источник: разброс нужен, чтобы инстансы не долбили
-	// вендора в такт, а не ради криптографии.
-	rnd := rand.New(rand.NewSource(1))
 	return RetryPolicy{
 		Max:  3,
 		Base: 500 * time.Millisecond,
+		// Глобальный источник math/rand, а не фиксированное семя: разброс нужен
+		// ровно для того, чтобы инстансы и повторы не попадали в такт, а
+		// постоянное семя давало бы у всех одинаковую последовательность
+		// задержек — то есть ровно такт. Детерминизм для тестов не нужен: они
+		// подставляют свою RetryPolicy через WithRetry.
 		Jitter: func(d time.Duration) time.Duration {
-			return d + time.Duration(rnd.Int63n(int64(d/2)+1))
+			return d + time.Duration(rand.Int63n(int64(d/2)+1))
 		},
 		Sleep: func(ctx context.Context, d time.Duration) error {
 			t := time.NewTimer(d)

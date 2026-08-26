@@ -129,8 +129,16 @@ func IncRunRequests(ctx context.Context, pool *pgxpool.Pool, runID int64) {
 	}
 }
 
+// FinishRun закрывает строку прогона.
+//
+// Контекст ОТВЯЗАН, как и у IncRunRequests, и по той же причине. Сработавший
+// таймаут цикла иначе валит именно эту запись, и строка остаётся с пустым
+// finished_at навсегда — а на «последний успешный прогон» опирается режим
+// STALE-SAFE. Терять то самое единственное окно в причины отказа нельзя.
 func FinishRun(ctx context.Context, pool *pgxpool.Pool, runID int64, r RunResult) error {
-	_, err := pool.Exec(ctx, `
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err := pool.Exec(finishCtx, `
 		update live_ingest_runs set
 			finished_at = now(),
 			rows_parsed = $2, rows_in_scope = $3, rows_matched = $4,
@@ -197,7 +205,7 @@ type ScheduleRow struct {
 // upcoming теряет матч в момент, когда он выходит на корт, поэтому чистка по
 // поколению стёрла бы окно наблюдения ровно у идущего матча.
 func UpsertSchedule(ctx context.Context, pool *pgxpool.Pool, source string,
-	rows []ScheduleRow, at time.Time, keepBefore time.Time) (int, int64, error) {
+	rows []ScheduleRow, at time.Time, keepBefore, staleRefresh time.Time) (int, int64, error) {
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -227,10 +235,18 @@ func UpsertSchedule(ctx context.Context, pool *pgxpool.Pool, source string,
 		}
 	}
 
+	// Две ветки чистки, потому что нельзя удалить одну конкретную строку:
+	// матч, который вышел на корт, ИСЧЕЗАЕТ из выдачи upcoming, и у него есть
+	// scheduled_at. Поэтому по времени матча чистим только заведомо прошедшее.
+	// Фикстуры без scheduled_at этим случаем быть не могут (окна они не
+	// открывают вовсе), поэтому их чистим по времени обновления — иначе они
+	// копились бы вечно.
 	tag, err := tx.Exec(ctx, `
 		delete from live_schedule
-		where source = $1 and scheduled_at is not null and scheduled_at < $2`,
-		source, keepBefore)
+		where source = $1
+		  and ((scheduled_at is not null and scheduled_at < $2)
+		    or (scheduled_at is null and refreshed_at < $3))`,
+		source, keepBefore, staleRefresh)
 	if err != nil {
 		return 0, 0, err
 	}
