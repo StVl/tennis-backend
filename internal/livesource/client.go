@@ -183,6 +183,23 @@ func (c *Client) Fixtures(ctx context.Context, playerKeys []string) (FixturePage
 	return out, nil
 }
 
+// Player — карточка игрока. Один запрос из общей квоты, поэтому вызывающий
+// обязан сам ограничивать частоту (см. ленивый резолвер).
+func (c *Client) Player(ctx context.Context, key string) (VendorPlayer, error) {
+	body, err := c.get(ctx, "/players/"+url.PathEscape(key), nil)
+	if err != nil {
+		return VendorPlayer{}, err
+	}
+	var wire struct {
+		ID   flexKey `json:"id"`
+		Name string  `json:"name"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return VendorPlayer{}, fmt.Errorf("parse player: %w", err)
+	}
+	return VendorPlayer{Key: string(wire.ID), Name: wire.Name}, nil
+}
+
 // Usage — остаток суточной квоты по данным САМОГО вендора.
 //
 // Наша арифметика исходит из того, что сутки квоты сбрасываются в полночь UTC.

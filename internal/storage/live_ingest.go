@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -163,6 +164,63 @@ func SweepAbandonedRuns(ctx context.Context, pool *pgxpool.Pool, job string,
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// RetentionPolicy — сроки хранения журналов ingest'а.
+//
+// Горизонты разные не для красоты. Прогоны нужны дольше всего: на «предыдущий
+// успешный прогон» опирается защита от обвала, а на порядок id — счётчик
+// пропусков, поэтому слишком короткая чистка сломала бы обе, и молча.
+// Обработанные события пушер уже забрал. Очередь ревью живёт дольше всех:
+// её читает человек, и он читает её редко.
+type RetentionPolicy struct {
+	Observations time.Duration
+	Runs         time.Duration
+	Events       time.Duration
+	Unmatched    time.Duration
+}
+
+func DefaultRetention() RetentionPolicy {
+	return RetentionPolicy{
+		Observations: 30 * 24 * time.Hour,
+		Runs:         14 * 24 * time.Hour,
+		Events:       7 * 24 * time.Hour,
+		Unmatched:    90 * 24 * time.Hour,
+	}
+}
+
+// PruneLiveTables чистит журналы. Возвращает число удалённых строк по таблицам.
+//
+// Наблюдения удаляются каскадом вместе с прогонами (см. db/live_ingest.sql),
+// поэтому горизонт прогонов не может быть длиннее горизонта наблюдений — иначе
+// каскад унёс бы наблюдения раньше срока. Проверяется здесь, а не комментарием.
+func PruneLiveTables(ctx context.Context, pool *pgxpool.Pool, now time.Time,
+	p RetentionPolicy) (map[string]int64, error) {
+
+	if p.Runs > p.Observations {
+		p.Runs = p.Observations
+	}
+	out := map[string]int64{}
+	for _, step := range []struct {
+		name  string
+		query string
+		age   time.Duration
+	}{
+		// события — только уже потреблённые: непрочитанные пушером не трогаем
+		{"live_events", `delete from live_events where consumed_at is not null and consumed_at < $1`, p.Events},
+		{"live_observations", `delete from live_observations where observed_at < $1`, p.Observations},
+		{"live_ingest_runs", `delete from live_ingest_runs where started_at < $1`, p.Runs},
+		{"live_unmatched", `delete from live_unmatched where observed_at < $1`, p.Unmatched},
+	} {
+		tag, err := pool.Exec(ctx, step.query, now.Add(-step.age))
+		if err != nil {
+			return out, fmt.Errorf("prune %s: %w", step.name, err)
+		}
+		if n := tag.RowsAffected(); n > 0 {
+			out[step.name] = n
+		}
+	}
+	return out, nil
 }
 
 // TrackedExternalKeys — id отслеживаемых игроков у источника. Основа Job A:

@@ -855,6 +855,25 @@ Flag these rather than picking a default:
 3. Doubles in or out of the trigger?
 4. Outbox table or `pg_notify` for transition events?
 
+> **Revised 2026-08-26 — Phases 0-9 implemented.** The pipeline runs end to end;
+> what remains is a decision, not code. Enabling `LIVE_CREATE_MATCHES` relaxes
+> rule 3, and that is the iOS side's call — it ships off. Until it is on, the
+> ingester resolves players correctly and finds no match row to flip, because
+> nothing in `matches` has ever been `scheduled`.
+>
+> Two limits worth carrying into Task 2 rather than discovering there:
+>
+> **Flip latency is still unmeasured** (unknown #3, never closed). How long the
+> vendor takes to mark a match live sits underneath whatever interval we choose,
+> and it cannot be derived from `scheduled_time` — a match starts when the
+> previous one on that court ends.
+>
+> **The lazy resolver has only names to work with.** `players.birth_date` and
+> `country_code` are NULL for all 173 rows, so neither birthday nor country
+> participates in matching. Backfilling them from `players.json` — free, already
+> in hand for 129 of 134 mapped players — belongs in tennis-data-storage and is
+> the single change that would most improve resolution.
+>
 > **Revised 2026-08-24 — all four answered**, see *Status*: Free tier; the API *can* express
 > suspension (`Interrupted`), so rain gets a real state; doubles out; outbox table.
 >

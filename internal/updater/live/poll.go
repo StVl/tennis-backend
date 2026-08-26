@@ -116,6 +116,8 @@ func (u *PollUpdater) Update(ctx context.Context) error {
 		MatchWindow: u.cfg.MatchWindow,
 		MaxLiveAge:  u.cfg.MaxLiveAge,
 		PrevInScope: prevInScope,
+		Resolver:    src,
+		ResolveMax:  u.cfg.ResolveMaxPerCycle,
 	})
 
 	result := storage.RunResult{
@@ -260,6 +262,18 @@ type IngestParams struct {
 	MaxLiveAge  time.Duration
 	// rows_in_scope предыдущего успешного цикла; nil — сравнивать не с чем.
 	PrevInScope *int
+	// Ленивый резолвер игроков. nil выключает его целиком — так работает
+	// dev-эндпоинт повтора: он не ходит к вендору вообще.
+	Resolver PlayerResolver
+	// Потолок обращений резолвера за цикл: они тратят ту же квоту, а
+	// регулятор про них не знает.
+	ResolveMax int
+}
+
+// PlayerResolver достаёт карточку игрока у источника. Интерфейс, а не функция
+// клиента: цикл повтора обходится без него, и это должно быть видно в типе.
+type PlayerResolver interface {
+	Player(ctx context.Context, key string) (livesource.VendorPlayer, error)
 }
 
 // collapseMinRows — с какого числа наших матчей в предыдущем цикле обвал
@@ -282,6 +296,8 @@ type IngestResult struct {
 	Left        int
 	// Источник считает матч идущим, но наш guard флип не пропустил.
 	Refused int
+	// Сколько игроков разрешено лениво в этом цикле.
+	Resolved int
 	// Непустое значение означает, что сработала защита: наблюдения не
 	// записаны, проход по пропускам не выполнялся.
 	GuardTripped string
@@ -336,11 +352,23 @@ func Ingest(ctx context.Context, pool *pgxpool.Pool, board livesource.Board,
 		res.RowsInScope++
 
 		if !ok1 || !ok2 {
-			// Один известен, второй нет: кандидат для ленивого резолвера
-			// (Phase 9). Пока — в очередь ревью.
-			_ = storage.RecordUnmatched(ctx, pool, livesource.SourceName,
-				unmatchedRow(o), "one_side_unresolved", p.Now)
-			continue
+			// Один игрок известен, второй нет. Пробуем разрешить второго —
+			// один раз, под лимитом и с негативным кэшом.
+			missing := o.PlayerKeys[0]
+			if ok1 {
+				missing = o.PlayerKeys[1]
+			}
+			id, resolved := tryResolve(ctx, pool, p, missing, &res)
+			if !resolved {
+				_ = storage.RecordUnmatched(ctx, pool, livesource.SourceName,
+					unmatchedRow(o), "one_side_unresolved", p.Now)
+				continue
+			}
+			if ok1 {
+				p2, ok2 = id, true
+			} else {
+				p1, ok1 = id, true
+			}
 		}
 
 		anchor := p.Now
@@ -438,6 +466,53 @@ func Ingest(ctx context.Context, pool *pgxpool.Pool, board livesource.Board,
 // меняем», но приходит из ДВУХ разных мест: «матч на месте, всё идёт» и «матча
 // в борте нет, копим пропуск». Отметить флаг увиденным во втором случае —
 // значит обнулять счётчик пропусков каждый цикл, и карточка не погаснет никогда.
+// tryResolve пытается привязать неизвестный id игрока к нашему.
+//
+// Три ограничителя, и каждый нужен:
+//   - лимит за цикл: обращения тратят ту же квоту, а регулятор считает только
+//     опросы борта и про них не знает;
+//   - негативный кэш: без него неизвестный id запрашивался бы каждый цикл
+//     вечно. Holger Rune — ровно этот случай: его нет в индексе источника, то
+//     есть ответ всегда будет пустым;
+//   - строгий предикат в storage: сопоставлять можно только по именам, и
+//     неверная привязка тихо покажет карточку не того игрока.
+func tryResolve(ctx context.Context, pool *pgxpool.Pool, p IngestParams,
+	key string, res *IngestResult) (int64, bool) {
+
+	if p.Resolver == nil || res.Resolved >= p.ResolveMax {
+		return 0, false
+	}
+	ok, err := storage.ShouldTryResolve(ctx, pool, livesource.SourceName, key, p.Now)
+	if err != nil || !ok {
+		return 0, false
+	}
+
+	vendor, err := p.Resolver.Player(ctx, key)
+	if err != nil {
+		slog.Warn("live: lazy resolve request failed", "external_key", key, "error", err)
+		_ = storage.RecordResolveAttempt(ctx, pool, livesource.SourceName, key, p.Now)
+		return 0, false
+	}
+
+	playerID, err := storage.MatchPlayerByName(ctx, pool, vendor.Name)
+	if err != nil {
+		// Отказ — тоже результат, и он кэшируется: иначе тот же безнадёжный
+		// ключ будет стоить запрос каждый цикл.
+		_ = storage.RecordResolveAttempt(ctx, pool, livesource.SourceName, key, p.Now)
+		slog.Info("live: no confident match for an unknown player",
+			"external_key", key, "vendor_name", vendor.Name)
+		return 0, false
+	}
+	if err := storage.UpsertPlayerMapping(ctx, pool, livesource.SourceName, key, playerID); err != nil {
+		slog.Error("live: writing a lazy player mapping failed", "error", err)
+		return 0, false
+	}
+	res.Resolved++
+	slog.Info("live: mapped a player lazily; confirmed_at is null pending review",
+		"external_key", key, "vendor_name", vendor.Name, "player_id", playerID)
+	return playerID, true
+}
+
 func applyAction(ctx context.Context, pool *pgxpool.Pool, matchID int64,
 	externalKey string, runID int64, next FlagState, action Action,
 	seen bool, now time.Time) error {

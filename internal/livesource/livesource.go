@@ -114,8 +114,19 @@ type FixturePage struct {
 
 // Source — источник live-статусов. Интерфейс существует, чтобы смена вендора
 // была новым файлом, а не переписыванием ingest'а.
+// VendorPlayer — то немногое, что нам нужно об игроке у источника.
+// Полей биографии здесь нет: сопоставлять их всё равно не с чем — birth_date и
+// country_code у наших игроков пустые.
+type VendorPlayer struct {
+	Key  string
+	Name string
+}
+
 type Source interface {
 	Name() string
 	PollLive(ctx context.Context) (Board, error)
 	Fixtures(ctx context.Context, playerKeys []string) (FixturePage, error)
+	// Player — карточка игрока по id источника. Стоит запрос из той же квоты,
+	// поэтому вызывается только ленивым резолвером и только под лимитом.
+	Player(ctx context.Context, key string) (VendorPlayer, error)
 }

@@ -21,12 +21,28 @@ type fakeSource struct {
 	err       error
 	gotKeys   []string
 	onRequest func()
+	// ленивый резолвер: что вендор ответит про игрока и сколько раз спросили
+	players     map[string]livesource.VendorPlayer
+	playerCalls int
+	playerErr   error
 }
 
 func (f *fakeSource) Name() string { return livesource.SourceName }
 
 func (f *fakeSource) PollLive(ctx context.Context) (livesource.Board, error) {
 	return livesource.Board{}, nil
+}
+
+func (f *fakeSource) Player(ctx context.Context, key string) (livesource.VendorPlayer, error) {
+	f.playerCalls++
+	if f.playerErr != nil {
+		return livesource.VendorPlayer{}, f.playerErr
+	}
+	p, ok := f.players[key]
+	if !ok {
+		return livesource.VendorPlayer{}, errors.New("unknown player")
+	}
+	return p, nil
 }
 
 func (f *fakeSource) Fixtures(ctx context.Context, playerKeys []string) (livesource.FixturePage, error) {

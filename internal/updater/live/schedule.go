@@ -169,16 +169,20 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		}
 	}
 
-	// Журнал прогонов растёт быстрее всех: тик раз в пять минут это около 288
-	// строк в сутки, почти все — «спим». Горизонт заведомо длиннее любого
-	// разумного простоя: на «предыдущий успешный прогон» опирается защита от
-	// обвала, а на порядок id — счётчик пропусков.
-	if purged, err := storage.PruneRuns(ctx, u.pool,
-		startedAt.Add(-runRetention)); err != nil {
-		slog.Error("live-schedule: pruning the run log failed", "error", err)
-	} else if purged > 0 {
-		slog.Info("live-schedule: pruned old run rows", "count", purged)
+	// Чистка журналов. Job A — подходящее место: он редкий, и лишний проход
+	// по служебным таблицам три раза в сутки ничего не стоит.
+	if purged, err := storage.PruneLiveTables(ctx, u.pool, startedAt,
+		storage.DefaultRetention()); err != nil {
+		slog.Error("live-schedule: pruning the ingest journals failed", "error", err)
+	} else if len(purged) > 0 {
+		slog.Info("live-schedule: pruned ingest journals", "deleted", purged)
 	}
+
+	// Сверка квоты с самим вендором. Наша арифметика исходит из того, что
+	// сутки квоты сбрасываются в полночь UTC; если у него иначе, регулятор
+	// часть суток считает неверно и мы упираемся в 429 в предсказуемое время.
+	// Стоит один запрос на прогон Job A, то есть три в сутки из ста.
+	u.reconcileQuota(ctx, src)
 
 	withoutTime := 0
 	for _, f := range rows {
@@ -195,6 +199,38 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		// а не выясняется потом по отсутствию карточек.
 		"without_start_time", withoutTime)
 	return nil
+}
+
+// reconcileQuota сверяет наш счётчик с ответом источника.
+//
+// Не падает при расхождении: вендор — истина, но действовать по ней здесь
+// нечем, зато расхождение видно в логах до того, как начнутся 429.
+func (u *ScheduleUpdater) reconcileQuota(ctx context.Context, src livesource.Source) {
+	client, ok := src.(interface {
+		Usage(context.Context) (livesource.Usage, error)
+	})
+	if !ok {
+		return
+	}
+	usage, err := client.Usage(ctx)
+	if err != nil {
+		slog.Warn("live-schedule: usage check failed", "error", err)
+		return
+	}
+	ours := u.cfg.DailyQuota - usage.CallsToday - u.cfg.Reserve
+	slog.Info("live-schedule: vendor quota",
+		"tier", usage.Tier, "per_day", usage.PerDay,
+		"calls_today", usage.CallsToday, "vendor_remaining", usage.RemainingDay,
+		"our_budget_left", ours)
+	if usage.PerDay != u.cfg.DailyQuota {
+		slog.Warn("live-schedule: LIVE_DAILY_QUOTA does not match the vendor's limit; "+
+			"the governor is pacing against the wrong number",
+			"configured", u.cfg.DailyQuota, "vendor", usage.PerDay)
+	}
+	if usage.RemainingDay <= u.cfg.Reserve {
+		slog.Error("live-schedule: the vendor says we are nearly out of quota today",
+			"vendor_remaining", usage.RemainingDay, "reserve", u.cfg.Reserve)
+	}
 }
 
 // createMatches превращает фикстуры в строки matches со статусом scheduled.
