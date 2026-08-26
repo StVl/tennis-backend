@@ -114,14 +114,35 @@ func (h *Handler) DevLiveIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prevInScope, err := storage.PrevSuccessfulInScope(r.Context(), h.pool)
+	if err != nil {
+		respondQueryError(w, err)
+		return
+	}
 	res, ingestErr := live.Ingest(r.Context(), h.pool, board, live.IngestParams{
 		RunID:       runID,
 		Now:         now,
 		MatchWindow: h.cfg.LiveMatchWindow,
 		MaxLiveAge:  h.cfg.LiveMaxLiveAge,
+		PrevInScope: prevInScope,
 	})
 
-	runResult := storage.RunResult{Mode: "replay"}
+	// Счётчики заполняются так же, как у поллера: строка прогона — единственное
+	// окно в то, почему карточка появилась или нет, и повтор не должен быть в
+	// ней менее читаемым.
+	//
+	// Чего здесь СОЗНАТЕЛЬНО нет — IncRunRequests: повтор не ходит к вендору и
+	// не должен перекашивать регулятор квоты. Именно поэтому в предикате
+	// пропусков (HeldLiveFlags) нет условия requests_made > 0 — иначе повтор
+	// не считался бы пропуском и трёхцикловой выход из live через dev-путь
+	// проверить было бы нельзя. Асимметрия несущая, «чинить» её не надо.
+	runResult := storage.RunResult{
+		Mode:                  "replay",
+		RowsParsed:            &board.RowsParsed,
+		RowsInScope:           &res.RowsInScope,
+		RowsMatched:           &res.RowsMatched,
+		RowsDroppedUnresolved: &res.RowsDropped,
+	}
 	if ingestErr != nil {
 		runResult.Error = ingestErr.Error()
 	} else if res.GuardTripped != "" {
@@ -143,6 +164,7 @@ func (h *Handler) DevLiveIngest(w http.ResponseWriter, r *http.Request) {
 		"dropped":       res.RowsDropped,
 		"entered":       res.Entered,
 		"left":          res.Left,
+		"refused":       res.Refused,
 		"guard":         res.GuardTripped,
 	})
 }

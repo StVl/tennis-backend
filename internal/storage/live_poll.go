@@ -238,6 +238,77 @@ func OrphanFlags(ctx context.Context, pool *pgxpool.Pool, source string) ([]int6
 	})
 }
 
+// DBNow — время по часам Postgres.
+//
+// Единственное обращение к часам за цикл, и именно к часам БАЗЫ. Смешивать их
+// с time.Now() нельзя: Postgres на Railway — отдельный сервис, и расхождение
+// реально. А сравнивается это время с величинами, взятыми из БД
+// (last_poll_at, границы суток квоты), так что разъезд бьёт и по интервалу
+// опроса, и по границе суток.
+func DBNow(ctx context.Context, pool *pgxpool.Pool) (time.Time, error) {
+	var now time.Time
+	err := pool.QueryRow(ctx, `select now()`).Scan(&now)
+	return now.UTC(), err
+}
+
+// UnflaggedLiveMatches — зеркальный случай к OrphanFlags: матч помечен live,
+// а флага у нас нет.
+//
+// Такое возможно, когда статус поменяли МИМО нас: пайплайн владеет matches и
+// в его enum есть live, восстановление из бэкапа посреди флипа даёт то же
+// самое. Все прочие страховки завязаны на live_flags и этот случай не видят:
+// аварийный выход по возрасту читает flipped_at, которого нет.
+//
+// Строку мы НЕ присваиваем: prior_status пришлось бы выдумать, а неверное
+// восстановление затрёт результат, который принадлежит пайплайну. Поэтому
+// только громкий лог — но зато с именами, а не тишина, при которой ложная
+// карточка висит у всех подписчиков до правки прода руками.
+func UnflaggedLiveMatches(ctx context.Context, pool *pgxpool.Pool, source string) ([]int64, error) {
+	rows, err := pool.Query(ctx, `
+		select m.id from matches m
+		where m.status = 'live'
+		  and not exists (select 1 from live_flags f where f.match_id = m.id)`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (int64, error) {
+		var id int64
+		err := row.Scan(&id)
+		return id, err
+	})
+}
+
+// PrevSuccessfulInScope — rows_in_scope предыдущего УСПЕШНОГО прогона Job B.
+// Нужен защите от обвала: см. Ingest. Прогоны с ошибкой и пропуски исключены,
+// потому что у них счётчики частичные или отсутствуют.
+func PrevSuccessfulInScope(ctx context.Context, pool *pgxpool.Pool) (*int, error) {
+	var v *int
+	err := pool.QueryRow(ctx, `
+		select rows_in_scope from live_ingest_runs
+		where job = 'live' and error is null and skipped_reason is null
+		  and finished_at is not null and rows_in_scope is not null
+		order by id desc limit 1`).Scan(&v)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return v, err
+}
+
+// PruneRuns чистит журнал прогонов. Тик раз в пять минут даёт около 288 строк
+// в сутки, почти все — «спим».
+//
+// Горизонт обязан быть заметно длиннее любого разумного простоя: на «предыдущий
+// успешный прогон» опирается защита от обвала, а на порядок id — счётчик
+// пропусков. Слишком короткая чистка сломает и то и другое молча.
+func PruneRuns(ctx context.Context, pool *pgxpool.Pool, before time.Time) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`delete from live_ingest_runs where started_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // LiveWindow — отрезок наблюдения. Дублирует форму из updater/live намеренно:
 // storage не должен зависеть от слоя джобов.
 type LiveWindow struct{ From, To time.Time }

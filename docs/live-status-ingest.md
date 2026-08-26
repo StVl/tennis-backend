@@ -553,6 +553,32 @@ is its only claim. A card that lingers thirty seconds too long costs nothing.
 - **Raw payload retention.** Persist the raw response body (score fields stripped) per run, or at
   least on error, so a parse bug can be replayed without waiting for another live match.
 
+> **Revised 2026-08-26 — implemented, with three departures worth stating.**
+>
+> **The cycle is NOT one transaction**, contrary to what §7 implies. Observations,
+> flips and flag updates run as separate statements. What that requirement was
+> actually protecting — status + flag + outbox being atomic, so a crash can never
+> send a push for a transition that did not happen — holds, because those three
+> live inside `FlipLive`/`FlipOut`. An aborted cycle leaves partial observations,
+> but the absence sweep never runs, so nothing is swept on partial data. One real
+> consequence: `rows_in_scope` / `rows_matched` are partial on an aborted run,
+> which is why the collapse guard compares only against runs that finished clean.
+>
+> **The collapse guard cannot protect a single card, and says so.** It compares
+> `rows_in_scope` against the previous successful run and refuses to sweep on a
+> large drop — but only above `collapseMinRows` (3). Below that the signals are
+> genuinely identical: holding one card, `1 → 0` looks the same whether the match
+> ended or the vendor stopped listing it. For a single match the three-miss
+> debounce *is* the protection; the collapse guard covers many matches vanishing
+> at once, which is where it is statistically visible.
+>
+> **A match can be live with no flag of ours** — the pipeline owns `matches` and
+> its enum has `live`, and a backup restored mid-flip does it too. Every other
+> backstop reads `live_flags` and is blind to this. `UnflaggedLiveMatches` detects
+> it and logs loudly with ids, but deliberately does **not** adopt the row:
+> restoring a `prior_status` we never recorded would be a guess, and a wrong guess
+> overwrites a result the pipeline owns.
+>
 > **Revised 2026-08-24.**
 > - **Zero-rows guard needs a second, sharper condition.** The feed is worldwide, so literal
 >   `rows_parsed == 0` only ever means the API broke. The condition that actually protects a card is

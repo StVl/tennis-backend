@@ -272,3 +272,109 @@ func TestIngestDevFlagsAreExemptFromSweep(t *testing.T) {
 		t.Fatalf("статус %q: ручной флип не должен откатываться проходом по пропускам", got)
 	}
 }
+
+// Обвал: борт полон, но НАШИХ матчей в нём разом не стало. По симптомам это
+// неотличимо от «все матчи кончились одновременно», а цена ошибки разная —
+// поэтому сравниваем с предыдущим успешным циклом и не гасим.
+func TestIngestCollapseGuardStopsTheSweep(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	ctx := context.Background()
+
+	runIngest(t, pool, boardWith(fm, livesource.StateOnCourt, ""))
+
+	// предыдущий цикл видел много наших матчей
+	prev := 10
+	runID, now, err := storage.StartRun(ctx, pool, "live", livesource.SourceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Ingest(ctx, pool, boardWithout(), IngestParams{
+		RunID: runID, Now: now, MatchWindow: 36 * time.Hour,
+		MaxLiveAge: 6 * time.Hour, PrevInScope: &prev,
+	})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if res.GuardTripped == "" {
+		t.Fatal("защита от обвала не сработала: 10 -> 0 при поднятой карточке")
+	}
+	if res.Left != 0 {
+		t.Fatalf("left=%d: при обвале гасить нельзя", res.Left)
+	}
+	if got := matchStatus(t, pool, fm.id); got != "live" {
+		t.Fatalf("статус %q, матч должен остаться live", got)
+	}
+}
+
+// Честная граница защиты: с одним матчем 1 -> 0 неотличимо от окончания, и
+// защита обязана НЕ мешать нормальному выходу. Для единичного матча страховкой
+// служит дебаунс в три пропуска, а не эта проверка.
+func TestIngestCollapseGuardDoesNotBlockNormalExit(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	ctx := context.Background()
+
+	runIngest(t, pool, boardWith(fm, livesource.StateOnCourt, ""))
+
+	prev := 1 // ниже collapseMinRows
+	for i := 0; i < missThreshold; i++ {
+		runID, now, err := storage.StartRun(ctx, pool, "live", livesource.SourceName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := Ingest(ctx, pool, boardWithout(), IngestParams{
+			RunID: runID, Now: now, MatchWindow: 36 * time.Hour,
+			MaxLiveAge: 6 * time.Hour, PrevInScope: &prev,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.GuardTripped != "" {
+			t.Fatalf("цикл %d: защита сработала на единичном матче и заблокировала "+
+				"нормальный выход: %s", i, res.GuardTripped)
+		}
+		if err := storage.FinishRun(ctx, pool, runID, storage.RunResult{Mode: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := matchStatus(t, pool, fm.id); got != "scheduled" {
+		t.Fatalf("статус %q: обычный выход по пропускам должен работать", got)
+	}
+}
+
+// Матч live без нашего флага: все прочие страховки читают live_flags и этого
+// случая не видят. Присваивать строку нельзя (prior_status пришлось бы
+// выдумать), но и молчать нельзя — это ложная карточка у всех подписчиков.
+func TestUnflaggedLiveMatchIsDetected(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	ctx := context.Background()
+
+	// кто-то написал статус мимо нас
+	if _, err := pool.Exec(ctx,
+		`update matches set status = 'live' where id = $1`, fm.id); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := storage.UnflaggedLiveMatches(ctx, pool, livesource.SourceName)
+	if err != nil {
+		t.Fatalf("UnflaggedLiveMatches: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != fm.id {
+		t.Fatalf("найдено %v, ожидался [%d]: без этого запроса ложная карточка "+
+			"висит бессрочно и правится только руками в проде", ids, fm.id)
+	}
+
+	// а флага у нас действительно нет — значит остальные страховки слепы
+	held, err := storage.HeldLiveFlags(ctx, pool, livesource.SourceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 0 {
+		t.Fatalf("флагов %d, ожидалось 0", len(held))
+	}
+}

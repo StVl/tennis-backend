@@ -15,6 +15,10 @@ import (
 	"github.com/StVl/tennis-backend/internal/storage"
 )
 
+// errFlipRefused — guard не пропустил подъём. Не ошибка цикла: строка просто
+// не в том состоянии, и цикл продолжается.
+var errFlipRefused = errors.New("flip refused by guard")
+
 // PollUpdater — Job B. Тикает часто, тратит редко.
 type PollUpdater struct {
 	pool   *pgxpool.Pool
@@ -29,7 +33,14 @@ func NewPoll(pool *pgxpool.Pool, newSrc SourceFactory, cfg config.LiveConfig) *P
 func (u *PollUpdater) Name() string { return "live" }
 
 func (u *PollUpdater) Update(ctx context.Context) error {
-	now := time.Now().UTC()
+	// Одно обращение к часам за цикл, и именно к часам Postgres. Всё, с чем
+	// это время сравнивается — last_poll_at, границы суток квоты, flipped_at —
+	// пришло из БД, а Postgres на Railway отдельный сервис: смешение часов
+	// перекашивает и интервал опроса, и границу суток.
+	now, err := storage.DBNow(ctx, u.pool)
+	if err != nil {
+		return fmt.Errorf("read db clock: %w", err)
+	}
 
 	// Шаги 1 и 2 идут ДО проверки рубильника и до решения об опросе.
 	// Это не стилистика: и то и другое гасит карточки, и оба обязаны работать,
@@ -74,9 +85,14 @@ func (u *PollUpdater) Update(ctx context.Context) error {
 		return nil
 	}
 
-	runID, startedAt, err := storage.StartRun(ctx, u.pool, u.Name(), livesource.SourceName)
+	runID, _, err := storage.StartRun(ctx, u.pool, u.Name(), livesource.SourceName)
 	if err != nil {
 		return fmt.Errorf("start run: %w", err)
+	}
+	prevInScope, err := storage.PrevSuccessfulInScope(ctx, u.pool)
+	if err != nil {
+		slog.Error("live: cannot read the previous cycle's in-scope count; "+
+			"the collapse guard is blind this cycle", "error", err)
 	}
 	src := u.newSrc(func() { storage.IncRunRequests(ctx, u.pool, runID) })
 
@@ -92,9 +108,10 @@ func (u *PollUpdater) Update(ctx context.Context) error {
 
 	res, err := Ingest(ctx, u.pool, board, IngestParams{
 		RunID:       runID,
-		Now:         startedAt,
+		Now:         now,
 		MatchWindow: u.cfg.MatchWindow,
 		MaxLiveAge:  u.cfg.MaxLiveAge,
+		PrevInScope: prevInScope,
 	})
 
 	result := storage.RunResult{
@@ -146,6 +163,22 @@ func (u *PollUpdater) reconcile(ctx context.Context, now time.Time) error {
 			continue
 		}
 		slog.Warn("live: flag cleared for a match that is no longer live", "match_id", id)
+	}
+
+	// Зеркальный случай: матч помечен live, а флага у нас нет. Все остальные
+	// страховки читают live_flags и этого не видят вовсе.
+	unflagged, err := storage.UnflaggedLiveMatches(ctx, u.pool, livesource.SourceName)
+	if err != nil {
+		return err
+	}
+	if len(unflagged) > 0 {
+		// Не присваиваем: prior_status пришлось бы выдумать, а неверное
+		// восстановление затрёт результат пайплайна. Но и молчать нельзя —
+		// это ложная карточка у всех подписчиков обоих игроков.
+		slog.Error("live: matches are live with no flag of ours; something wrote "+
+			"matches.status outside this service. They will not be swept: restoring "+
+			"a status we never recorded would be a guess",
+			"match_ids", unflagged, "count", len(unflagged))
 	}
 
 	if u.cfg.MaxLiveAge <= 0 {
@@ -202,7 +235,20 @@ type IngestParams struct {
 	Now         time.Time
 	MatchWindow time.Duration
 	MaxLiveAge  time.Duration
+	// rows_in_scope предыдущего успешного цикла; nil — сравнивать не с чем.
+	PrevInScope *int
 }
+
+// collapseMinRows — с какого числа наших матчей в предыдущем цикле обвал
+// вообще имеет смысл проверять.
+//
+// Ниже этого порога защита принципиально невозможна, и об этом лучше сказать
+// прямо. Когда мы держим один матч, переход in_scope 1 -> 0 выглядит ОДИНАКОВО
+// и когда матч честно кончился, и когда источник перестал его показывать.
+// Различить их нечем, и именно поэтому выход из live стоит трёх пропусков:
+// для единичного матча защитой служит дебаунс, а не эта проверка. Обвал же
+// ловится там, где он статистически виден — когда разом исчезает много матчей.
+const collapseMinRows = 3
 
 // IngestResult — счётчики цикла.
 type IngestResult struct {
@@ -211,6 +257,8 @@ type IngestResult struct {
 	RowsDropped int
 	Entered     int
 	Left        int
+	// Источник считает матч идущим, но наш guard флип не пропустил.
+	Refused int
 	// Непустое значение означает, что сработала защита: наблюдения не
 	// записаны, проход по пропускам не выполнялся.
 	GuardTripped string
@@ -306,7 +354,12 @@ func Ingest(ctx context.Context, pool *pgxpool.Pool, board livesource.Board,
 			age = p.Now.Sub(flag.FlippedAt)
 		}
 		next, action := Derive(cur, Signal{Seen: true, State: o.State}, age, p.MaxLiveAge)
-		if err := applyAction(ctx, pool, matchID, o.ExternalKey, p.RunID, next, action, true, p.Now); err != nil {
+		err = applyAction(ctx, pool, matchID, o.ExternalKey, p.RunID, next, action, true, p.Now)
+		if errors.Is(err, errFlipRefused) {
+			res.Refused++
+			continue
+		}
+		if err != nil {
 			return res, err
 		}
 		switch action {
@@ -315,6 +368,25 @@ func Ingest(ctx context.Context, pool *pgxpool.Pool, board livesource.Board,
 		case ActionLeaveLive, ActionForceExit:
 			res.Left++
 		}
+	}
+
+	// Защита от обвала. Ноль разобранных строк — это сломанный источник, но
+	// борт может остаться полным и при этом разом лишиться ВСЕХ наших матчей:
+	// поехавший шард, регрессия пагинации, изменившийся фильтр. По симптомам
+	// это неотличимо от «все наши матчи кончились одновременно», а цена ошибки
+	// разная: во втором случае карточки и должны погаснуть, в первом — нет.
+	//
+	// Поэтому сравниваем с предыдущим успешным циклом и срабатываем только на
+	// заметном обвале при наличии поднятых карточек. Наблюдения уже записаны
+	// (они — факт), но проход по пропускам не выполняется.
+	if p.PrevInScope != nil && *p.PrevInScope >= collapseMinRows &&
+		len(held) > 0 && res.RowsInScope*2 < *p.PrevInScope {
+
+		res.GuardTripped = fmt.Sprintf(
+			"in-scope rows collapsed from %d to %d while holding %d card(s): "+
+				"treating as a source failure, not as matches ending",
+			*p.PrevInScope, res.RowsInScope, len(held))
+		return res, nil
 	}
 
 	// Проход по пропускам выполняется ТОЛЬКО после успешного опроса: иначе
@@ -349,9 +421,24 @@ func applyAction(ctx context.Context, pool *pgxpool.Pool, matchID int64,
 
 	switch action {
 	case ActionEnterLive:
-		if _, err := storage.FlipLive(ctx, pool, matchID,
-			livesource.SourceName, externalKey, &runID, now); err != nil {
+		flip, err := storage.FlipLive(ctx, pool, matchID,
+			livesource.SourceName, externalKey, &runID, now)
+		if err != nil {
 			return fmt.Errorf("flip live: %w", err)
+		}
+		// Результат разбирается, а не выбрасывается: иначе отказ guard'а
+		// (например, у строки уже есть winner_side) выглядит как успешный
+		// подъём, Derive запрашивает его снова каждый цикл, и в счётчике
+		// entered стоит матч, который на самом деле не поднят.
+		switch flip {
+		case storage.FlipRefused:
+			slog.Warn("live: refused to flip a match the source calls on court; "+
+				"it is not scheduled or already has a winner",
+				"match_id", matchID, "external_key", externalKey)
+			return errFlipRefused
+		case storage.FlipAlreadyLive:
+			slog.Warn("live: match was already live without a flag of ours",
+				"match_id", matchID)
 		}
 	case ActionLeaveLive:
 		if _, _, err := storage.FlipOut(ctx, pool, matchID,

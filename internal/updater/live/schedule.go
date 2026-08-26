@@ -159,6 +159,17 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		return fmt.Errorf("fetch fixtures: %w", fetchErr)
 	}
 
+	// Журнал прогонов растёт быстрее всех: тик раз в пять минут это около 288
+	// строк в сутки, почти все — «спим». Горизонт заведомо длиннее любого
+	// разумного простоя: на «предыдущий успешный прогон» опирается защита от
+	// обвала, а на порядок id — счётчик пропусков.
+	if purged, err := storage.PruneRuns(ctx, u.pool,
+		startedAt.Add(-runRetention)); err != nil {
+		slog.Error("live-schedule: pruning the run log failed", "error", err)
+	} else if purged > 0 {
+		slog.Info("live-schedule: pruned old run rows", "count", purged)
+	}
+
 	withoutTime := 0
 	for _, f := range rows {
 		if f.ScheduledAt == nil {
@@ -192,5 +203,8 @@ func (u *ScheduleUpdater) recordSkip(ctx context.Context, reason string) {
 func intPtr(v int) *int { return &v }
 
 // staleAfter — через сколько отсутствие успешного прогона Job A считается
-// протухшим расписанием. Используется Job B в Phase 7.
+// протухшим расписанием.
 const staleAfter = 12 * time.Hour
+
+// runRetention — сколько держим журнал прогонов.
+const runRetention = 14 * 24 * time.Hour
