@@ -58,7 +58,11 @@ type MatchDraft struct {
 //     сетке на вылет не больше одного раза; исключение — круговой групповой
 //     этап на ATP Finals, один турнир в году.
 //
-//  3. import_key даёт идемпотентность. do update, а не do nothing: последний
+//  3. discipline задаётся ЯВНО, а не берётся из умолчания колонки. Умолчание
+//     живёт в схеме, которой владеет другой репозиторий: полагаться на него —
+//     значит зависеть от чужого решения, которое могут поменять, не зная про нас.
+//
+//  4. import_key даёт идемпотентность. do update, а не do nothing: последний
 //     не возвращает строку, и на повторном прогоне id для вставки участников
 //     взять было бы неоткуда.
 //
@@ -103,8 +107,9 @@ func CreateMatchFromFixture(ctx context.Context, pool *pgxpool.Pool,
 
 	var matchID int64
 	if err := tx.QueryRow(ctx, `
-		insert into matches (edition_id, round_code, scheduled_at, status, import_key, metadata)
-		values ($1, $2, $3, 'scheduled', $4, $5::jsonb)
+		insert into matches (edition_id, round_code, scheduled_at, status,
+		                     discipline, import_key, metadata)
+		values ($1, $2, $3, 'scheduled', 'singles', $4, $5::jsonb)
 		on conflict (import_key) do update set import_key = excluded.import_key
 		returning id`,
 		d.EditionID, d.RoundCode, d.ScheduledAt, ImportKeyPrefix+d.ExternalKey,

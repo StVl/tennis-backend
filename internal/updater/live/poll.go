@@ -15,6 +15,10 @@ import (
 	"github.com/StVl/tennis-backend/internal/storage"
 )
 
+// createdMatchTTL — насколько позже назначенного времени наша созданная строка
+// считается несостоявшейся.
+const createdMatchTTL = 48 * time.Hour
+
 // errFlipRefused — guard не пропустил подъём. Не ошибка цикла: строка просто
 // не в том состоянии, и цикл продолжается.
 var errFlipRefused = errors.New("flip refused by guard")
@@ -179,6 +183,25 @@ func (u *PollUpdater) reconcile(ctx context.Context, now time.Time) error {
 			"matches.status outside this service. They will not be swept: restoring "+
 			"a status we never recorded would be a guess",
 			"match_ids", unflagged, "count", len(unflagged))
+	}
+
+	// Уборка наших созданных строк живёт ЗДЕСЬ, а не в создателе, и вызывается
+	// безусловно.
+	//
+	// Если её держать внутри createMatches, она включена только пока включены
+	// ОБА флага. А выключение LIVE_CREATE_MATCHES — это задокументированный
+	// способ откатить ослабление правила 3, которое iOS-сторона ещё должна
+	// одобрить; ровно в этот момент уборка замерла бы, и каждая созданная
+	// строка осталась бы навсегда scheduled с датой в прошлом. Рубильник
+	// LIVE_POLL_ENABLED во время инцидента делает то же самое.
+	//
+	// Безусловный вызов безопасен: фильтр идёт по нашему префиксу import_key,
+	// чужие строки не затрагиваются никогда.
+	if retired, err := storage.RetireCreatedMatches(ctx, u.pool,
+		now.Add(-createdMatchTTL)); err != nil {
+		slog.Error("live: retiring stale created matches failed", "error", err)
+	} else if retired > 0 {
+		slog.Info("live: retired stale created matches", "count", retired)
 	}
 
 	if u.cfg.MaxLiveAge <= 0 {

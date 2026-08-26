@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -208,10 +209,11 @@ func FlipLive(ctx context.Context, pool *pgxpool.Pool, matchID int64,
 	var (
 		status     string
 		winnerSide *int
+		importKey  *string
 	)
 	if err := tx.QueryRow(ctx,
-		`select status::text, winner_side from matches where id = $1 for update`,
-		matchID).Scan(&status, &winnerSide); err != nil {
+		`select status::text, winner_side, import_key from matches where id = $1 for update`,
+		matchID).Scan(&status, &winnerSide, &importKey); err != nil {
 		return FlipRefused, err
 	}
 
@@ -225,6 +227,23 @@ func FlipLive(ctx context.Context, pool *pgxpool.Pool, matchID int64,
 	if _, err := tx.Exec(ctx,
 		`update matches set status = 'live' where id = $1`, matchID); err != nil {
 		return FlipRefused, err
+	}
+
+	// Строку, созданную НАМИ из фикстуры, возвращать в 'scheduled' нельзя:
+	// матч уже сыгран, а такая строка с датой в прошлом становится у обоих
+	// игроков «следующим матчем» на главной и в виджете — до тех пор, пока её
+	// не спрячет отсечка в 12 часов, и потом ещё сутки с лишним она невидимо
+	// висит до уборщика. Поэтому конечное состояние задаётся здесь, и обычный
+	// путь восстановления сам приводит матч в терминальный статус — без
+	// частного случая в FlipOut.
+	//
+	// Именно 'cancelled', а не 'completed': completed означало бы, что мы
+	// знаем результат, а придумывать его запрещено правилом 2. Результат
+	// принадлежит пайплайну, и когда он доедет, строка будет заменена его
+	// собственной.
+	priorStatus := status
+	if importKey != nil && strings.HasPrefix(*importKey, ImportKeyPrefix) {
+		priorStatus = "cancelled"
 	}
 
 	// Досюда мы дошли только если матч НЕ был live. Флаг в этот момент
@@ -252,7 +271,7 @@ func FlipLive(ctx context.Context, pool *pgxpool.Pool, matchID int64,
 			source = excluded.source, external_key = excluded.external_key,
 			state = excluded.state, prior_status = excluded.prior_status,
 			flipped_at = excluded.flipped_at, last_seen_run_id = excluded.last_seen_run_id`,
-		matchID, source, key, status, at, runID); err != nil {
+		matchID, source, key, priorStatus, at, runID); err != nil {
 		return FlipRefused, err
 	}
 

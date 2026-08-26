@@ -205,15 +205,6 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 func (u *ScheduleUpdater) createMatches(ctx context.Context,
 	fixtures []livesource.Fixture, now time.Time) error {
 
-	// Убираем свои же протухшие строки до создания новых: иначе матч, который
-	// так и не состоялся, навсегда останется у обоих игроков «следующим».
-	if retired, err := storage.RetireCreatedMatches(ctx, u.pool,
-		now.Add(-createdMatchTTL)); err != nil {
-		slog.Error("live-schedule: retiring stale created matches failed", "error", err)
-	} else if retired > 0 {
-		slog.Info("live-schedule: retired stale created matches", "count", retired)
-	}
-
 	editionKeys := make([]string, 0, len(fixtures))
 	playerKeys := make([]string, 0, len(fixtures)*2)
 	for _, f := range fixtures {
@@ -300,10 +291,6 @@ func (u *ScheduleUpdater) createMatches(ctx context.Context,
 		"unknown_round", unknownRound, "skipped", skipped)
 	return nil
 }
-
-// createdMatchTTL — насколько позже назначенного времени наша созданная строка
-// считается несостоявшейся.
-const createdMatchTTL = 48 * time.Hour
 
 // recordSkip оставляет строку прогона для тика, который ничего не потратил.
 func (u *ScheduleUpdater) recordSkip(ctx context.Context, reason string) {

@@ -22,36 +22,51 @@
 -- Поэтому связь N:1, как и у игроков: много внешних ключей на один наш
 -- розыгрыш. Не превращать индекс в unique.
 --
+-- ОСНОВНАЯ СЕТКА US OPEN ЕЩЁ НЕ ОТОБРАЖЕНА. Во всех снятых срезах у US Open
+-- встречались только 1217 и 1218 (квалификация, 129 строк) и 1221 (пара).
+-- Писатель квалификацию пропускает, разбор отбрасывает пары — значит при
+-- включённом LIVE_CREATE_MATCHES во время US Open не создастся НИЧЕГО, и
+-- выглядеть это будет как сломанный писатель. На самом деле id основной сетки
+-- появится в live_unmatched с reason='edition_unmapped' на первом же
+-- обновлении расписания после публикации сетки; добавьте его сюда строкой.
+--
 -- Сид заведомо НЕПОЛОН, и это нормально. Незнакомый id турнира отправляет
 -- фикстуру в live_unmatched с reason='edition_unmapped' — это и есть очередь,
 -- по которой файл пополняется. Догадок здесь нет и быть не должно: неверно
 -- угаданный розыгрыш создаёт матч в чужой сетке.
 
+-- confirmed_at заполнен ТОЛЬКО у id, реально наблюдавшихся в ответах по матчам.
+-- Остальные взяты из каталога /tournaments: турнир они называют верно, но роль
+-- каждого id (основная сетка / квалификация / пара) каталог не сообщает, а
+-- угадывать её — ровно то, чего этот файл делать не должен. Такие строки
+-- работают, но помечены как ждущие подтверждения.
 insert into external_ids (source, entity_type, external_key, entity_id, confirmed_at)
-select 'livetennisapi', 'edition', v.external_key, te.id, now()
+select 'livetennisapi', 'edition', v.external_key, te.id,
+       case when v.observed then now() end
 from (values
   -- US Open. 1217 и 1218 наблюдались на квалификации, 1221 — парный разряд;
   -- парные до писателя матчей не доходят (отсекаются на разборе), а
   -- квалификация отсекается самим писателем.
-  ('1217', 'us_open_2026'),
-  ('1218', 'us_open_2026'),
-  ('1219', 'us_open_2026'),
-  ('1221', 'us_open_2026'),
+  ('1217', 'us_open_2026', true),
+  ('1218', 'us_open_2026', true),
+  -- 1219 — из каталога, в ответах по матчам не встречался ни разу.
+  ('1219', 'us_open_2026', false),
+  ('1221', 'us_open_2026', true),
   -- Cincinnati: 1209 из ответов по матчам, 1210/1211 из каталога
-  ('1209', 'cincinnati_2026'),
-  ('1210', 'cincinnati_2026'),
-  ('1211', 'cincinnati_2026'),
+  ('1209', 'cincinnati_2026', true),
+  ('1210', 'cincinnati_2026', false),
+  ('1211', 'cincinnati_2026', false),
   -- Shanghai. «Shanghai 2» (3700/9189) сюда НЕ входит: это отдельный турнир
   -- в том же городе, а не второй id того же самого.
-  ('1667', 'shanghai_2026'),
-  ('8656', 'shanghai_2026'),
+  ('1667', 'shanghai_2026', false),
+  ('8656', 'shanghai_2026', false),
   -- Rolex Paris Masters
-  ('1725', 'paris_masters_2026'),
-  ('1726', 'paris_masters_2026'),
+  ('1725', 'paris_masters_2026', false),
+  ('1726', 'paris_masters_2026', false),
   -- Nitto ATP Finals (у источника «Finals - Turin»)
-  ('2794', 'atp_finals_2026'),
-  ('2795', 'atp_finals_2026')
-) as v(external_key, edition_slug)
+  ('2794', 'atp_finals_2026', false),
+  ('2795', 'atp_finals_2026', false)
+) as v(external_key, edition_slug, observed)
 join tournament_editions te on te.slug = v.edition_slug
 on conflict (source, entity_type, external_key) do nothing;
 

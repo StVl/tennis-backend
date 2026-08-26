@@ -215,3 +215,79 @@ func TestRetireCreatedMatches(t *testing.T) {
 			pipelineTouched)
 	}
 }
+
+// Созданная нами строка после окончания матча обязана получить ТЕРМИНАЛЬНЫЙ
+// статус, а не вернуться в scheduled.
+//
+// Иначе уже сыгранный матч показывается обоим игрокам как предстоящий: на
+// главной и в виджете он остаётся «следующим матчем» до тех пор, пока его не
+// спрячет отсечка в 12 часов, и ещё сутки с лишним висит невидимо до уборщика.
+// Уборщик закрывает хвост, но не это окно.
+func TestCreatedMatchEndsTerminal(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	editionID, p1, p2 := createFixtureEnv(t)
+	cleanupCreated(t)
+
+	id, _, err := CreateMatchFromFixture(ctx, pool, MatchDraft{
+		EditionID: editionID, RoundCode: "R128",
+		ScheduledAt: time.Now().UTC().Add(time.Hour),
+		PlayerIDs:   [2]int64{p1, p2}, ExternalKey: "test-900030",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := FlipLive(ctx, pool, id, LiveSourceAPI, "test-900030", nil, now); err != nil {
+		t.Fatalf("FlipLive: %v", err)
+	}
+
+	// прежний статус запоминается на входе: для нашей строки он терминальный
+	var prior string
+	if err := pool.QueryRow(ctx,
+		`select prior_status::text from live_flags where match_id = $1`, id).Scan(&prior); err != nil {
+		t.Fatal(err)
+	}
+	if prior == "scheduled" {
+		t.Fatal("prior_status = scheduled: сыгранный матч вернётся в «предстоящие» " +
+			"и станет у обоих игроков «следующим матчем»")
+	}
+	// но и не completed: это означало бы, что мы знаем результат
+	if prior == "completed" {
+		t.Fatal("prior_status = completed: результат придумывать нельзя, он " +
+			"принадлежит пайплайну")
+	}
+
+	if _, _, err := FlipOut(ctx, pool, id, LiveEventFinished, "test", now); err != nil {
+		t.Fatalf("FlipOut: %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx,
+		`select status::text from matches where id = $1`, id).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status == "scheduled" {
+		t.Fatalf("статус после окончания %q — сыгранный матч показывается как предстоящий", status)
+	}
+
+	// чужие строки ведут себя по-прежнему: возвращаются в scheduled
+	var pipelineID int64
+	if err := pool.QueryRow(ctx,
+		`select id from matches where import_key not like $1 and status = 'scheduled' limit 1`,
+		ImportKeyPrefix+"%").Scan(&pipelineID); err == nil {
+		if _, err := FlipLive(ctx, pool, pipelineID, LiveSourceAPI, "", nil, now); err != nil {
+			t.Fatal(err)
+		}
+		var p string
+		if err := pool.QueryRow(ctx,
+			`select prior_status::text from live_flags where match_id = $1`, pipelineID).Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p != "scheduled" {
+			t.Errorf("prior_status чужой строки = %q, ожидался scheduled: правило "+
+				"касается только наших строк", p)
+		}
+		_, _, _ = FlipOut(ctx, pool, pipelineID, LiveEventFinished, "test", now)
+	}
+}
