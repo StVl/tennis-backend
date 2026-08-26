@@ -178,3 +178,105 @@ func TestRetentionRunsHorizonClampedByObservations(t *testing.T) {
 			"каскад унесёт наблюдения раньше срока", d.Runs, d.Observations)
 	}
 }
+
+// Однофамилец, которого мы НЕ отслеживаем, обязан вызывать отказ. Сужение
+// кандидатов до отслеживаемых выглядит безопаснее, но делает ровно наоборот:
+// неоднозначность перестаёт возникать, и привязка молча уходит не туда.
+func TestMatchPlayerRefusesOnUntrackedNamesake(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	// берём отслеживаемого игрока с уникальной среди отслеживаемых фамилией
+	var (
+		trackedID int64
+		lastName  string
+	)
+	if err := pool.QueryRow(ctx, `
+		select id, last_name from players
+		where is_tracked and last_name is not null
+		  and (select count(*) from players p2 where lower(p2.last_name) = lower(players.last_name)) = 1
+		order by id limit 1`).Scan(&trackedID, &lastName); err != nil {
+		t.Skipf("нет игрока с уникальной фамилией: %v", err)
+	}
+
+	// до появления однофамильца — привязка находится
+	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); err != nil {
+		t.Fatalf("до однофамильца должно находиться: %v", err)
+	}
+
+	// заводим НЕотслеживаемого однофамильца
+	var namesakeID int64
+	if err := pool.QueryRow(ctx, `
+		insert into players (slug, display_name, last_name, is_tracked)
+		values ($1, $2, $3, false) returning id`,
+		"test-namesake-zz", "Other "+lastName, lastName).Scan(&namesakeID); err != nil {
+		t.Fatalf("создание однофамильца: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `delete from players where id = $1`, namesakeID)
+	})
+
+	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); !errors.Is(err, ErrNoConfidentMatch) {
+		t.Fatalf("err = %v: однофамилец обязан приводить к отказу, даже если он "+
+			"не отслеживается — иначе карточка уйдёт не тому игроку", err)
+	}
+}
+
+// Односложное имя от источника не должно проходить по одной фамилии: именно так
+// выглядят его записи-заглушки, то есть самый бедный данными случай получал бы
+// самое слабое доказательство.
+func TestMatchPlayerRefusesSingleWordVendorName(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	var lastName string
+	if err := pool.QueryRow(ctx, `
+		select last_name from players
+		where is_tracked and last_name is not null
+		  and (select count(*) from players p2 where lower(p2.last_name) = lower(players.last_name)) = 1
+		order by id limit 1`).Scan(&lastName); err != nil {
+		t.Skipf("нет игрока с уникальной фамилией: %v", err)
+	}
+
+	if _, err := MatchPlayerByName(ctx, pool, lastName); !errors.Is(err, ErrNoConfidentMatch) {
+		t.Fatalf("err = %v: одна фамилия без имени — недостаточное доказательство", err)
+	}
+	// а с именем — находится
+	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); err != nil {
+		t.Fatalf("с двумя словами должно находиться: %v", err)
+	}
+}
+
+// Неподтверждённая привязка розыгрыша не должна создавать матчи: это
+// единственное место, где догадка привела бы к записи в чужую таблицу.
+func TestResolveEditionsIgnoresUnconfirmed(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	var editionID int64
+	if err := pool.QueryRow(ctx,
+		`select id from tournament_editions limit 1`).Scan(&editionID); err != nil {
+		t.Skip("нет розыгрышей")
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx,
+			`delete from external_ids where source = 'test-ed'`)
+	})
+	if _, err := pool.Exec(ctx, `
+		insert into external_ids (source, entity_type, external_key, entity_id, confirmed_at)
+		values ('test-ed','edition','confirmed-1',$1, now()),
+		       ('test-ed','edition','guessed-1',$1, null)`, editionID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveEditions(ctx, pool, "test-ed", []string{"confirmed-1", "guessed-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["confirmed-1"]; !ok {
+		t.Error("подтверждённая привязка должна резолвиться")
+	}
+	if _, ok := got["guessed-1"]; ok {
+		t.Fatal("неподтверждённая привязка резолвится: догадка создаст матч в чужой сетке")
+	}
+}

@@ -190,6 +190,18 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 			withoutTime++
 		}
 	}
+	// Сводка очереди ревью: без неё «dropped=7» в логе цикла ни на что не
+	// указывает, а именно из этой очереди пополняются сиды розыгрышей и игроков.
+	if queue, err := storage.UnmatchedQueue(ctx, u.pool, livesource.SourceName); err != nil {
+		slog.Error("live-schedule: reading the review queue failed", "error", err)
+	} else {
+		for _, q := range queue {
+			slog.Warn("live-schedule: review queue needs attention",
+				"reason", q.Reason, "count", q.Count, "samples", q.Samples,
+				"hint", queueHint(q.Reason))
+		}
+	}
+
 	slog.Info("live-schedule: updated",
 		"players", len(keys), "rows_parsed", page.RowsParsed,
 		"upserted", upserted, "pruned", pruned, "foreign", foreign,
@@ -199,6 +211,24 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		// а не выясняется потом по отсутствию карточек.
 		"without_start_time", withoutTime)
 	return nil
+}
+
+// queueHint подсказывает, что с этой причиной делать: очередь читают редко и
+// без подсказки она превращается в свалку.
+func queueHint(reason string) string {
+	switch reason {
+	case "edition_unmapped":
+		return "add the tournament id to db/live_edition_ids.sql, or confirm an existing unconfirmed row"
+	case "round_unmapped":
+		return "the vendor's round code is not in our rounds table; decide whether to add it there"
+	case "one_side_unresolved":
+		return "an opponent is unknown to us; the lazy resolver refused, so confirm by hand if it matters"
+	case "no_match_row":
+		return "we have no match for these two; expected until LIVE_CREATE_MATCHES is on"
+	case "ambiguous":
+		return "more than one of our matches fits; needs a human"
+	}
+	return ""
 }
 
 // reconcileQuota сверяет наш счётчик с ответом источника.

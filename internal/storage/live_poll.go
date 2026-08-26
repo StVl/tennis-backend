@@ -309,6 +309,39 @@ func PruneRuns(ctx context.Context, pool *pgxpool.Pool, before time.Time) (int64
 	return tag.RowsAffected(), nil
 }
 
+// UnmatchedSummary — очередь ревью в разрезе причин.
+type UnmatchedSummary struct {
+	Reason string     `json:"reason"`
+	Count  int        `json:"count"`
+	Newest *time.Time `json:"newest"`
+	// Примеры внешних ключей: по ним человек и дополняет сиды.
+	Samples []string `json:"samples"`
+}
+
+// UnmatchedQueue — сводка по live_unmatched.
+//
+// Очередь — задокументированный вход и для db/live_edition_ids.sql, и для
+// ленивого резолвера, но до сих пор прочитать её можно было только через psql.
+// Механизм, о котором никто не узнает, пополнять сиды не заставит.
+func UnmatchedQueue(ctx context.Context, pool *pgxpool.Pool, source string) ([]UnmatchedSummary, error) {
+	rows, err := pool.Query(ctx, `
+		select reason, count(*), max(observed_at),
+		       (array_agg(distinct payload->>'external_key'))[1:5]
+		from live_unmatched
+		where source = $1
+		group by reason
+		order by count(*) desc`,
+		source)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (UnmatchedSummary, error) {
+		var u UnmatchedSummary
+		err := row.Scan(&u.Reason, &u.Count, &u.Newest, &u.Samples)
+		return u, err
+	})
+}
+
 // LiveWindow — отрезок наблюдения. Дублирует форму из updater/live намеренно:
 // storage не должен зависеть от слоя джобов.
 type LiveWindow struct{ From, To time.Time }

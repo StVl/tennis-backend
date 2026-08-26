@@ -70,6 +70,7 @@ func NewRouter(pool *pgxpool.Pool, cfg HandlerConfig) http.Handler {
 				r.Post("/matches/{id}/finish", handler.DevMatchFinish)
 				r.Get("/matches/{id}/live-state", handler.DevLiveState)
 				r.Post("/live/ingest", handler.DevLiveIngest)
+				r.Get("/live/unmatched", handler.DevUnmatchedQueue)
 			})
 		}
 	})

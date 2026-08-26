@@ -168,3 +168,17 @@ func (h *Handler) DevLiveIngest(w http.ResponseWriter, r *http.Request) {
 		"guard":         res.GuardTripped,
 	})
 }
+
+// DevUnmatchedQueue — GET /v1/dev/live/unmatched
+//
+// Очередь ревью в разрезе причин. Существует потому, что она задокументирована
+// как вход для пополнения сидов розыгрышей и игроков, а прочитать её иначе
+// можно было только через psql на проде.
+func (h *Handler) DevUnmatchedQueue(w http.ResponseWriter, r *http.Request) {
+	queue, err := storage.UnmatchedQueue(r.Context(), h.pool, livesource.SourceName)
+	if err != nil {
+		respondQueryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": queue})
+}

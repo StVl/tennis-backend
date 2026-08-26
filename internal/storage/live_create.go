@@ -131,12 +131,27 @@ func CreateMatchFromFixture(ctx context.Context, pool *pgxpool.Pool,
 }
 
 // ResolveEditions — id турниров источника -> наши розыгрыши.
+//
+// Берутся ТОЛЬКО подтверждённые привязки (confirmed_at is not null).
+//
+// Это единственное место во всей фиче, где догадка приводила бы к записи строк
+// в таблицу, которой владеет другой репозиторий. Везде остальным месте
+// неподтверждённая привязка — это запись в очередь ревью, а не рабочий факт;
+// здесь должно быть так же. Половина сида выведена из каталога /tournaments:
+// турнир он называет верно, но роль каждого id (основная сетка, квалификация,
+// пара) не сообщает, а именно она решает, в какую сетку попадёт матч. Заголовок
+// db/live_edition_ids.sql называет цену прямо: неверно угаданный розыгрыш
+// создаёт матч в чужой сетке.
+//
+// Неподтверждённый id уходит в live_unmatched как edition_unmapped — то есть в
+// ту же очередь, из которой человек его и подтвердит.
 func ResolveEditions(ctx context.Context, pool *pgxpool.Pool, source string,
 	keys []string) (map[string]int64, error) {
 
 	rows, err := pool.Query(ctx, `
 		select external_key, entity_id from external_ids
-		where source = $1 and entity_type = 'edition' and external_key = any($2)`,
+		where source = $1 and entity_type = 'edition' and external_key = any($2)
+		  and confirmed_at is not null`,
 		source, keys)
 	if err != nil {
 		return nil, err
