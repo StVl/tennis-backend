@@ -31,9 +31,12 @@ func run() error {
 		return err
 	}
 
-	ctx := context.Background()
+	// корневой контекст: его отмена гасит идущие прогоны планировщика,
+	// иначе cron.Stop() ждёт их полного таймаута на каждом деплое
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
 
-	pool, err := storage.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	pool, err := storage.NewPool(rootCtx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		return err
 	}
@@ -42,7 +45,7 @@ func run() error {
 	tournamentsUpdater := tournaments.New(pool)
 	playersUpdater := players.New(pool)
 
-	jobScheduler := scheduler.New(cfg.UpdateTimeout)
+	jobScheduler := scheduler.New(rootCtx, cfg.UpdateTimeout)
 	if err := jobScheduler.Register([]scheduler.Job{
 		{Schedule: cfg.TournamentsCron, Updater: tournamentsUpdater},
 		{Schedule: cfg.PlayersCron, Updater: playersUpdater},
@@ -52,6 +55,8 @@ func run() error {
 
 	jobScheduler.Start()
 	defer func() {
+		// сначала отменяем текущие прогоны, только потом ждём их завершения
+		cancelRoot()
 		stopCtx := jobScheduler.Stop()
 		<-stopCtx.Done()
 	}()
