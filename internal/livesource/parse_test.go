@@ -77,8 +77,12 @@ func TestMapState(t *testing.T) {
 		{"live", "Interrupted", StateSuspended, true},
 		{"completed", "", StateFinished, true},
 		{"upcoming", "", "", true},
-		// неизвестное значение: падаем на status и сообщаем, что не распознали
-		{"live", "Zombie", StateOnCourt, false},
+		// отменённая ЗАВТРАШНЯЯ игра не наблюдение: она никогда не была на корте
+		{"upcoming", "Cancelled", "", true},
+		{"upcoming", "Interrupted", "", true},
+		// неизвестное значение НЕ угадывается: строка отбрасывается целиком,
+		// иначе одно наблюдение подняло бы карточку на незнакомом статусе
+		{"live", "Zombie", "", false},
 		{"upcoming", "Zombie", "", false},
 	}
 	for _, tc := range cases {
@@ -112,7 +116,6 @@ func TestParseSyntheticBoard(t *testing.T) {
 	want := map[string]State{
 		"900001": StateOnCourt,   // обычная живая строка
 		"900002": StateFinished,  // протухшая live-строка
-		"900003": StateOnCourt,   // неизвестный event_status -> падаем на status
 		"900004": StateSuspended, // дождь
 		"900005": StateFinished,  // перенесён: на корте его нет
 		"900008": StateOnCourt,   // без времени начала
@@ -128,14 +131,19 @@ func TestParseSyntheticBoard(t *testing.T) {
 		}
 	}
 
-	// парный разряд и строка без id второго игрока — отброшены
-	for _, key := range []string{"900006", "900007"} {
+	// парный разряд, строка без id второго игрока и незнакомый статус — отброшены
+	for _, key := range []string{"900003", "900006", "900007"} {
 		if _, ok := byKey[key]; ok {
 			t.Errorf("матч %s не должен был попасть в разбор", key)
 		}
 	}
-	if board.RowsSkipped != 2 {
-		t.Errorf("RowsSkipped = %d, ожидалось 2", board.RowsSkipped)
+	// счётчики раздельные: «парный разряд» и «не смогли прочитать» — разные события
+	if board.RowsDoubles != 1 {
+		t.Errorf("RowsDoubles = %d, ожидалось 1", board.RowsDoubles)
+	}
+	if board.RowsUnusable != 2 {
+		t.Errorf("RowsUnusable = %d, ожидалось 2 (нет id игрока + незнакомый статус)",
+			board.RowsUnusable)
 	}
 
 	if len(board.UnknownEventStatuses) != 1 || board.UnknownEventStatuses[0] != "Zombie" {
@@ -162,12 +170,16 @@ func TestParseRealBoard(t *testing.T) {
 	if board.RowsParsed != 19 {
 		t.Fatalf("RowsParsed = %d, ожидалось 19", board.RowsParsed)
 	}
-	if len(board.Observations)+board.RowsSkipped != board.RowsParsed {
-		t.Errorf("строки потерялись: %d + %d != %d",
-			len(board.Observations), board.RowsSkipped, board.RowsParsed)
+	if len(board.Observations)+board.RowsDoubles+board.RowsUnusable != board.RowsParsed {
+		t.Errorf("строки потерялись: %d + %d + %d != %d", len(board.Observations),
+			board.RowsDoubles, board.RowsUnusable, board.RowsParsed)
 	}
-	if board.RowsSkipped == 0 {
+	if board.RowsDoubles == 0 {
 		t.Error("в реальном срезе есть парные разряды, они должны быть отброшены")
+	}
+	if board.RowsUnusable != 0 {
+		t.Errorf("RowsUnusable = %d: настоящий борт вендора должен читаться целиком",
+			board.RowsUnusable)
 	}
 	for _, o := range board.Observations {
 		if o.PlayerKeys[0] == "" || o.PlayerKeys[1] == "" {
@@ -244,8 +256,11 @@ func TestKnownEventStatuses(t *testing.T) {
 		}
 		for _, row := range wire.Data {
 			if _, known := mapState(row.Status, row.EventStatus); !known {
-				// синтетическая фикстура содержит «Zombie» намеренно
-				if filepath.Base(f) == "live_board_synthetic.json" {
+				// «Zombie» лежит в синтетической фикстуре намеренно. Разрешаем
+				// именно это значение, а не файл целиком: иначе тест, чья
+				// работа — ловить новые значения, молча простил бы их в том
+				// самом файле, который правят чаще всего.
+				if row.EventStatus == "Zombie" {
 					continue
 				}
 				t.Errorf("%s: нераспознанный event_status %q — спека вендора разошлась, "+
@@ -253,4 +268,44 @@ func TestKnownEventStatuses(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Отменённые фикстуры не должны открывать окно опроса и не должны становиться
+// строками matches в Phase 8: матч не состоится.
+func TestParseFixturesDropsCancelled(t *testing.T) {
+	page, err := ParseFixtures(readFixture(t, "upcoming_board.json"))
+	if err != nil {
+		t.Fatalf("ParseFixtures: %v", err)
+	}
+	if page.RowsCancelled != 7 {
+		t.Errorf("RowsCancelled = %d, в снятом срезе 7 отменённых из 200", page.RowsCancelled)
+	}
+	total := len(page.Fixtures) + page.RowsDoubles + page.RowsCancelled + page.RowsUnusable
+	if total != page.RowsParsed {
+		t.Errorf("строки потерялись: %d != %d", total, page.RowsParsed)
+	}
+	if page.RowsUnusable != 0 {
+		t.Errorf("RowsUnusable = %d: настоящий борт должен читаться целиком", page.RowsUnusable)
+	}
+}
+
+// Раздельные счётчики существуют ради этого случая: борт upcoming, поданный
+// как live (не тот status= в запросе, смена умолчания у вендора), не должен
+// выглядеть как тихий день без матчей — иначе защита от пустого борта в Phase 7
+// не сработает там, где обязана.
+func TestParseBoardOnWrongEndpointIsVisible(t *testing.T) {
+	board, err := ParseBoard(readFixture(t, "upcoming_board.json"))
+	if err != nil {
+		t.Fatalf("ParseBoard: %v", err)
+	}
+	if len(board.Observations) != 0 {
+		t.Fatalf("наблюдений %d, ожидалось 0: на борте upcoming никто не на корте",
+			len(board.Observations))
+	}
+	if board.RowsUnusable == 0 {
+		t.Fatal("RowsUnusable = 0 — молчаливый ноль неотличим от тихого дня, " +
+			"ровно этого разделение счётчиков и должно не допускать")
+	}
+	t.Logf("видно: RowsParsed=%d RowsDoubles=%d RowsUnusable=%d",
+		board.RowsParsed, board.RowsDoubles, board.RowsUnusable)
 }

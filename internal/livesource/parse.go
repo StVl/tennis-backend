@@ -31,7 +31,6 @@ type wireMatch struct {
 	IsDoubles     bool       `json:"is_doubles"`
 	RoundCode     string     `json:"round_code"`
 	ScheduledTime *time.Time `json:"scheduled_time"`
-	EventDate     *time.Time `json:"event_date"`
 	TournamentID  flexKey    `json:"tournament_id"`
 	Tournament    string     `json:"tournament"`
 	Players       struct {
@@ -91,9 +90,13 @@ func ParseBoard(body []byte) (Board, error) {
 	seenUnknown := map[string]bool{}
 
 	for _, row := range wire.Data {
-		keys, ok := singlesPlayerKeys(row)
-		if !ok {
-			board.RowsSkipped++
+		keys, skip := singlesPlayerKeys(row)
+		switch skip {
+		case skipDoubles:
+			board.RowsDoubles++
+			continue
+		case skipUnusable:
+			board.RowsUnusable++
 			continue
 		}
 		state, known := mapState(row.Status, row.EventStatus)
@@ -102,7 +105,7 @@ func ParseBoard(body []byte) (Board, error) {
 			board.UnknownEventStatuses = append(board.UnknownEventStatuses, row.EventStatus)
 		}
 		if state == "" {
-			board.RowsSkipped++
+			board.RowsUnusable++
 			continue
 		}
 		board.Observations = append(board.Observations, Observation{
@@ -131,9 +134,20 @@ func ParseFixtures(body []byte) (FixturePage, error) {
 		HasMore:    wire.Meta.HasMore,
 	}
 	for _, row := range wire.Data {
-		keys, ok := singlesPlayerKeys(row)
-		if !ok {
-			page.RowsSkipped++
+		keys, skip := singlesPlayerKeys(row)
+		switch skip {
+		case skipDoubles:
+			page.RowsDoubles++
+			continue
+		case skipUnusable:
+			page.RowsUnusable++
+			continue
+		}
+		// Матч не состоится: окно опроса под него открывать нельзя, а в Phase 8
+		// из такой строки получилась бы запись matches про игру, которой не
+		// будет. В снятом срезе таких 7 из 200 — случай рядовой.
+		if row.EventStatus == "Cancelled" || row.EventStatus == "Postponed" {
+			page.RowsCancelled++
 			continue
 		}
 		page.Fixtures = append(page.Fixtures, Fixture{
@@ -143,30 +157,38 @@ func ParseFixtures(body []byte) (FixturePage, error) {
 			TournamentKey: string(row.TournamentID),
 			Tournament:    row.Tournament,
 			ScheduledAt:   row.ScheduledTime,
-			EventDate:     row.EventDate,
 		})
 	}
 	return page, nil
 }
+
+// skipReason различает «отбросили, так и надо» и «не смогли прочитать».
+type skipReason int
+
+const (
+	skipNone skipReason = iota
+	skipDoubles
+	skipUnusable
+)
 
 // singlesPlayerKeys ТРЕБУЕТ ровно двух опознаваемых одиночных игроков, а не
 // пытается распознать парный разряд. Разница принципиальная: неизвестная форма
 // (например p3/p4, которой мы не видели) будет пропущена, а не приведёт к
 // панике по индексу. Вендор моделирует пару как одного «игрока» со своим id,
 // поэтому одной проверки draw недостаточно.
-func singlesPlayerKeys(row wireMatch) ([2]string, bool) {
+func singlesPlayerKeys(row wireMatch) ([2]string, skipReason) {
 	var keys [2]string
 	if row.Draw == "doubles" || row.IsDoubles {
-		return keys, false
+		return keys, skipDoubles
 	}
 	p1, p2 := row.Players.P1, row.Players.P2
 	if p1.IsDoublesTeam || p2.IsDoublesTeam {
-		return keys, false
+		return keys, skipDoubles
 	}
 	if p1.ID == "" || p2.ID == "" || p1.ID == p2.ID {
-		return keys, false
+		return keys, skipUnusable
 	}
-	return [2]string{string(p1.ID), string(p2.ID)}, true
+	return [2]string{string(p1.ID), string(p2.ID)}, skipNone
 }
 
 // mapState переводит пару (status, event_status) в наше состояние.
@@ -177,13 +199,36 @@ func singlesPlayerKeys(row wireMatch) ([2]string, bool) {
 // поднимала бы карточку у завершённого матча.
 //
 // Второе возвращаемое значение — распознан ли event_status. Неизвестное
-// значение НЕ угадывается в on_court: мы падаем на status, а вызывающий
-// сообщает о новом значении. Enum вендора уже разошёлся с документацией
-// ("Finished" в ней нет), так что это не гипотетический случай.
+// значение НЕ угадывается: строка отбрасывается целиком.
+//
+// Это стоит объяснить, потому что выглядит строго. Вход в live — ОДНО
+// наблюдение, поэтому новое значение вендора («abandoned», «walkover pending»,
+// «suspended by weather»), пришедшее на строке, у которой status всё ещё live,
+// подняло бы карточку немедленно. Падение на status — это ровно та догадка,
+// которую правило запрещает. Ложный LIVE — единственный отказ, который карточка
+// не переживает, а enum вендора уже разошёлся с документацией однажды
+// ("Finished" в ней нет), так что случай ожидаемый, а не гипотетический.
+//
+// Цена честная: матч, который ИДЁТ и получил незнакомое значение, начнёт
+// копить пропуски, и его карточка погаснет через ~3 цикла. Это отказ в
+// безопасную сторону — карточка гаснет рано, а не загорается ложно.
+// UnknownEventStatuses и TestKnownEventStatuses поднимают тревогу в обоих случаях.
 func mapState(status, eventStatus string) (State, bool) {
 	switch eventStatus {
-	case "":
-		// админ-статуса нет — решает status
+	case "", "Finished", "Retired", "Walk Over", "Cancelled", "Postponed", "Interrupted":
+	default:
+		return "", false
+	}
+
+	// Строка про матч, которого ещё не было, — вообще не наблюдение, каким бы
+	// ни был event_status. Отменённая ЗАВТРАШНЯЯ игра не должна порождать
+	// «finished»: этот матч никогда не был на корте, гасить нечего.
+	// Отменённая ИДУЩАЯ игра сюда доходит, потому что у неё status=live.
+	if statusToState(status) == "" {
+		return "", true
+	}
+
+	switch eventStatus {
 	case "Finished", "Retired", "Walk Over", "Cancelled":
 		return StateFinished, true
 	case "Postponed":
@@ -192,8 +237,6 @@ func mapState(status, eventStatus string) (State, bool) {
 		return StateFinished, true
 	case "Interrupted":
 		return StateSuspended, true
-	default:
-		return statusToState(status), false
 	}
 	return statusToState(status), true
 }
