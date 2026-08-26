@@ -13,9 +13,10 @@ import (
 type HandlerConfig struct {
 	// Подключать ли раздел /v1/dev с ручными триггерами live-статуса.
 	DevEndpoints bool
-	// Потолок числа матчей в /v1/users/me/live-matches: клиент держит
-	// ограниченное число одновременных Live Activity.
-	LiveMatchesCap int
+	// Предохранитель на размер /v1/users/me/live-matches. НЕ продуктовый
+	// потолок: сколько Live Activity держать одновременно, решает клиент.
+	// Ответ честно сообщает total и truncated, если лимит сработал.
+	LiveMatchesLimit int
 }
 
 type Handler struct {

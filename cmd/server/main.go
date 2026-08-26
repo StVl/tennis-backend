@@ -59,8 +59,8 @@ func run() error {
 	server := &http.Server{
 		Addr: ":" + cfg.HTTPPort,
 		Handler: api.NewRouter(pool, api.HandlerConfig{
-			DevEndpoints:   cfg.DevEndpoints,
-			LiveMatchesCap: cfg.LiveMatchesCap,
+			DevEndpoints:     cfg.DevEndpoints,
+			LiveMatchesLimit: cfg.LiveMatchesLimit,
 		}),
 	}
 

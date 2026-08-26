@@ -82,6 +82,14 @@ const liveStaleGrace = 12 * time.Hour
 // Данные в matches приезжают пакетно и с лагом в недели, а ingest live-статуса
 // возвращает матч в прежний статус после окончания — без отсечки такой матч
 // оставался бы на главной и в виджете как предстоящий.
+//
+// На live-строки отсечка НЕ распространяется: живой матч актуален по
+// определению, каким бы старым ни было его scheduled_at. Иначе главная и виджет
+// начинают расходиться с /v1/matches?status=live и /v1/users/me/live-matches —
+// а весь смысл фичи в том, что карточка и экран читают одну и ту же колонку и
+// разойтись не могут. Случаи выше 12 часов реальны: возобновление после дождя
+// на следующий день и фикстура, у которой известна только дата (00:00Z), а на
+// корт она выходит вечером — ровно то, что создаёт писатель фикстур из Phase 8.
 func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
 	notBefore time.Time) (map[string]PlayerMatch, error) {
 	rows, err := pool.Query(ctx, `
@@ -97,7 +105,7 @@ func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
 		join tournament_editions te on te.id = vpm.edition_id
 		join tournaments t on t.id = te.tournament_id
 		where pl.slug = any($1) and vpm.status in ('scheduled', 'live')
-		  and (vpm.scheduled_at is null or vpm.scheduled_at >= $2)
+		  and (vpm.status = 'live' or vpm.scheduled_at is null or vpm.scheduled_at >= $2)
 		order by pl.slug, vpm.scheduled_at asc nulls last`,
 		slugs, notBefore)
 	if err != nil {

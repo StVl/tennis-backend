@@ -35,8 +35,12 @@ inserted as (
   select e.id, f.round_code, now() + make_interval(hours => f.offset_hours),
          'scheduled', f.import_key
   from fixtures f cross join edition e
+  -- обновляем ТОЛЬКО время. status здесь трогать нельзя: если фикстура прямо
+  -- сейчас live, откат в scheduled оставил бы висячую строку в live_flags —
+  -- флаг утверждает, что карточка поднята, а оба live-эндпоинта её уже не
+  -- видят. Сбрасывать статус нужно через POST /v1/dev/matches/{id}/finish.
   on conflict (import_key) do update
-    set scheduled_at = excluded.scheduled_at, status = excluded.status
+    set scheduled_at = excluded.scheduled_at
   returning id, import_key
 )
 insert into match_participants (match_id, side, slot, player_id)
@@ -51,10 +55,13 @@ commit;
 
 -- Что получилось
 select m.id, m.import_key, m.status, m.round_code, m.scheduled_at,
-       string_agg(p.slug, ' vs ' order by mp.side) as players
+       string_agg(p.slug, ' vs ' order by mp.side) as players,
+       -- видно, что матч поднят нами: иначе рассинхрон флага пришлось бы искать руками
+       f.source as live_flag
 from matches m
 join match_participants mp on mp.match_id = m.id
 join players p on p.id = mp.player_id
+left join live_flags f on f.match_id = m.id
 where m.import_key like 'devfix\_%'
-group by m.id, m.import_key, m.status, m.round_code, m.scheduled_at
+group by m.id, m.import_key, m.status, m.round_code, m.scheduled_at, f.source
 order by m.scheduled_at;

@@ -14,13 +14,15 @@ import (
 // если пуш об окончании не дошёл (сбой источника, APNs, офлайн), карточка
 // переживает матч, и снять её больше нечем.
 //
-// Ответ — нейтральная форма матча БЕЗ sets, score_text и live.
+// Ответ — нейтральная форма матча БЕЗ sets, score_text и live, плюс total и
+// truncated: раз клиент гасит карточки по отсутствию в ответе, ответ не имеет
+// права молча что-то не показать.
 func (h *Handler) MyLiveMatches(w http.ResponseWriter, r *http.Request) {
-	items, err := storage.UserLiveMatches(
-		r.Context(), h.pool, userID(r), h.cfg.LiveMatchesCap)
+	res, err := storage.UserLiveMatches(
+		r.Context(), h.pool, userID(r), h.cfg.LiveMatchesLimit)
 	if err != nil {
 		respondQueryError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, res)
 }

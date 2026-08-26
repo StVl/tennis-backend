@@ -80,18 +80,35 @@ type LiveMatch struct {
 	StartedAt *time.Time `json:"started_at"`
 }
 
+// UserLiveMatchesResult — выдача /v1/users/me/live-matches.
+//
+// Total и Truncated обязательны и не косметика. Клиент по контракту гасит
+// карточки, которых нет в ответе, поэтому молчаливое усечение означало бы
+// «матч закончился» для живого матча. Лимит здесь — предохранитель от
+// неограниченного ответа, а не продуктовое правило: сколько Live Activity
+// запускать одновременно, решает клиент, и это другой вопрос.
+type UserLiveMatchesResult struct {
+	Items []LiveMatch `json:"items"`
+	// Сколько живых матчей у подписок всего, до применения лимита.
+	Total int `json:"total"`
+	// true — часть матчей не попала в items; отсутствие матча в items НЕ
+	// означает, что он закончился.
+	Truncated bool `json:"truncated"`
+}
+
 // UserLiveMatches — живые матчи среди подписок пользователя.
 //
 // Матч, в котором пользователь подписан на ОБОИХ игроков, возвращается один
 // раз: условие — exists-подзапрос, а не join, иначе такая строка задвоилась бы.
 // Одиночки: парный разряд из триггера исключён.
 func UserLiveMatches(ctx context.Context, pool *pgxpool.Pool,
-	userID string, limit int) ([]LiveMatch, error) {
+	userID string, limit int) (*UserLiveMatchesResult, error) {
 
 	rows, err := pool.Query(ctx, `
 		select m.id, te.slug, t.name, m.round_code, m.scheduled_at, m.court,
 		       m.status::text, te.surface::text, f.flipped_at,
-		       coalesce(parts.j::text, '[]')
+		       coalesce(parts.j::text, '[]'),
+		       count(*) over () as total
 		from matches m
 		join tournament_editions te on te.id = m.edition_id
 		join tournaments t on t.id = te.tournament_id
@@ -112,31 +129,49 @@ func UserLiveMatches(ctx context.Context, pool *pgxpool.Pool,
 		  and exists (select 1 from match_participants mp2
 		              join follows fo on fo.player_id = mp2.player_id
 		              where mp2.match_id = m.id and fo.user_id = $1)
-		order by m.scheduled_at asc nulls last, m.id
+		order by f.flipped_at desc nulls last, m.id
 		limit $2`,
 		userID, limit)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, scanLiveMatch)
+
+	// count(*) over () считается до limit, поэтому total — настоящее число
+	// живых матчей, а не длина выдачи.
+	total := 0
+	items, err := pgx.CollectRows(rows,
+		func(row pgx.CollectableRow) (LiveMatch, error) {
+			m, rowTotal, err := scanLiveMatch(row)
+			total = rowTotal
+			return m, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	return &UserLiveMatchesResult{
+		Items:     items,
+		Total:     total,
+		Truncated: total > len(items),
+	}, nil
 }
 
-func scanLiveMatch(row pgx.CollectableRow) (LiveMatch, error) {
+func scanLiveMatch(row pgx.CollectableRow) (LiveMatch, int, error) {
 	var (
 		m         LiveMatch
 		partsJSON string
+		total     int
 	)
 	if err := row.Scan(&m.ID, &m.Edition, &m.TournamentName, &m.Round,
 		&m.ScheduledAt, &m.Court, &m.Status, &m.Surface, &m.StartedAt,
-		&partsJSON); err != nil {
-		return m, err
+		&partsJSON, &total); err != nil {
+		return m, 0, err
 	}
 	sides, err := sidesFromJSON(partsJSON)
 	if err != nil {
-		return m, err
+		return m, 0, err
 	}
 	m.Sides = sides
-	return m, nil
+	return m, total, nil
 }
 
 // FlipLive переводит матч в live и кладёт событие в outbox.
