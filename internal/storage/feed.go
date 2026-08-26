@@ -68,8 +68,22 @@ type TodayMatch struct {
 	StartAt    *time.Time `json:"start_at"`
 }
 
+// liveStaleGrace — насколько давно прошедший матч ещё может считаться
+// «ближайшим». Шире, чем окно наблюдения ingest'а (6 часов), чтобы реально
+// задержанный матч не выпадал: в срезе борта источника встречались фикстуры,
+// висевшие upcoming через 4 часа 44 минуты после назначенного времени.
+const liveStaleGrace = 12 * time.Hour
+
 // nextMatchPerPlayer — ближайший scheduled/live матч каждого игрока из списка.
-func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string) (map[string]PlayerMatch, error) {
+//
+// notBefore отсекает протухшие строки. Без него любой scheduled-матч с датой в
+// прошлом навсегда становится «следующим» у игрока: сортировка идёт по
+// scheduled_at по возрастанию, то есть чем древнее строка, тем выше она стоит.
+// Данные в matches приезжают пакетно и с лагом в недели, а ingest live-статуса
+// возвращает матч в прежний статус после окончания — без отсечки такой матч
+// оставался бы на главной и в виджете как предстоящий.
+func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
+	notBefore time.Time) (map[string]PlayerMatch, error) {
 	rows, err := pool.Query(ctx, `
 		select distinct on (pl.slug)
 		       pl.slug,
@@ -83,8 +97,9 @@ func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string)
 		join tournament_editions te on te.id = vpm.edition_id
 		join tournaments t on t.id = te.tournament_id
 		where pl.slug = any($1) and vpm.status in ('scheduled', 'live')
+		  and (vpm.scheduled_at is null or vpm.scheduled_at >= $2)
 		order by pl.slug, vpm.scheduled_at asc nulls last`,
-		slugs)
+		slugs, notBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +214,7 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 	if len(followed) == 0 {
 		return feed, nil
 	}
-	nextMatches, err := nextMatchPerPlayer(ctx, pool, followed)
+	nextMatches, err := nextMatchPerPlayer(ctx, pool, followed, time.Now().Add(-liveStaleGrace))
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +260,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 	dayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	dayFrom, dayTo := dayStart.UTC(), dayStart.AddDate(0, 0, 1).UTC()
 
-	nextMatches, err := nextMatchPerPlayer(ctx, pool, followed)
+	nextMatches, err := nextMatchPerPlayer(ctx, pool, followed, now.Add(-liveStaleGrace))
 	if err != nil {
 		return nil, err
 	}

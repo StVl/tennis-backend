@@ -57,8 +57,11 @@ func run() error {
 	}()
 
 	server := &http.Server{
-		Addr:    ":" + cfg.HTTPPort,
-		Handler: api.NewRouter(pool, cfg.DevEndpoints),
+		Addr: ":" + cfg.HTTPPort,
+		Handler: api.NewRouter(pool, api.HandlerConfig{
+			DevEndpoints:   cfg.DevEndpoints,
+			LiveMatchesCap: cfg.LiveMatchesCap,
+		}),
 	}
 
 	serverErr := make(chan error, 1)

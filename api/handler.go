@@ -7,12 +7,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Handler struct {
-	pool *pgxpool.Pool
+// HandlerConfig — то немногое из конфигурации, что нужно обработчикам на
+// каждом запросе. Отдельной структурой, а не *config.Config: api не должен
+// импортировать config, иначе слой ручек начинает зависеть от разбора env.
+type HandlerConfig struct {
+	// Подключать ли раздел /v1/dev с ручными триггерами live-статуса.
+	DevEndpoints bool
+	// Потолок числа матчей в /v1/users/me/live-matches: клиент держит
+	// ограниченное число одновременных Live Activity.
+	LiveMatchesCap int
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+type Handler struct {
+	pool *pgxpool.Pool
+	cfg  HandlerConfig
+}
+
+func NewHandler(pool *pgxpool.Pool, cfg HandlerConfig) *Handler {
+	return &Handler{pool: pool, cfg: cfg}
 }
 
 func (h *Handler) Hello(w http.ResponseWriter, r *http.Request) {

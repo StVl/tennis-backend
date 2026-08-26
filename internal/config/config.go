@@ -16,6 +16,7 @@ type Config struct {
 	UpdateTimeout   time.Duration
 	DBMaxConns      int32
 	DevEndpoints    bool
+	LiveMatchesCap  int
 }
 
 func Load() (*Config, error) {
@@ -38,6 +39,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse DB_MAX_CONNS: %w", err)
 	}
 
+	// Потолок одновременных Live Activity у клиента. Константа была бы неверна:
+	// лимит задаёт клиент, и менять его придётся без релиза бэкенда.
+	liveMatchesCap, err := strconv.Atoi(envOrDefault("LIVE_MATCHES_CAP", "5"))
+	if err != nil || liveMatchesCap < 1 {
+		return nil, fmt.Errorf("LIVE_MATCHES_CAP must be a positive integer")
+	}
+
 	return &Config{
 		HTTPPort:        httpPort,
 		DatabaseURL:     databaseURL,
@@ -46,6 +54,7 @@ func Load() (*Config, error) {
 		UpdateTimeout:   updateTimeout,
 		DBMaxConns:      dbMaxConns,
 		DevEndpoints:    envBool("DEV_ENDPOINTS_ENABLED", false),
+		LiveMatchesCap:  liveMatchesCap,
 	}, nil
 }
 

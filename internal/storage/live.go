@@ -58,6 +58,87 @@ type LiveMatchState struct {
 	Flag        *LiveFlag  `json:"flag"`
 }
 
+// LiveMatch — нейтральная форма живого матча БЕЗ полей счёта.
+//
+// sets, score_text и live отсутствуют намеренно, и поэтому это отдельный тип, а
+// не переиспользование Match: у Match эти поля без omitempty, то есть обнулить
+// их нельзя — получится "sets": null, а поле, которое существует, однажды
+// отрендерят. Правило 1 из docs/live-status-ingest.md: карточка показывает факт
+// присутствия на корте, а не счёт.
+type LiveMatch struct {
+	ID             int64       `json:"id"`
+	Edition        string      `json:"edition"`
+	TournamentName string      `json:"tournament_name"`
+	Round          string      `json:"round"`
+	ScheduledAt    *time.Time  `json:"scheduled_at"`
+	Court          *string     `json:"court"`
+	Status         string      `json:"status"`
+	Surface        string      `json:"surface"`
+	Sides          []MatchSide `json:"sides"`
+	// Когда мы пометили матч живым. Не время начала игры: источник сообщает
+	// факт «на корте», а не первый разыгранный мяч.
+	StartedAt *time.Time `json:"started_at"`
+}
+
+// UserLiveMatches — живые матчи среди подписок пользователя.
+//
+// Матч, в котором пользователь подписан на ОБОИХ игроков, возвращается один
+// раз: условие — exists-подзапрос, а не join, иначе такая строка задвоилась бы.
+// Одиночки: парный разряд из триггера исключён.
+func UserLiveMatches(ctx context.Context, pool *pgxpool.Pool,
+	userID string, limit int) ([]LiveMatch, error) {
+
+	rows, err := pool.Query(ctx, `
+		select m.id, te.slug, t.name, m.round_code, m.scheduled_at, m.court,
+		       m.status::text, te.surface::text, f.flipped_at,
+		       coalesce(parts.j::text, '[]')
+		from matches m
+		join tournament_editions te on te.id = m.edition_id
+		join tournaments t on t.id = te.tournament_id
+		left join live_flags f on f.match_id = m.id
+		left join lateral (
+			select json_agg(json_build_object(
+			         'side', mp.side, 'slot', mp.slot, 'slug', p.slug,
+			         'name', p.display_name, 'last_name', p.last_name,
+			         'photo_url', p.photo_url, 'rank', r.rank)
+			       order by mp.side, mp.slot) as j
+			from match_participants mp
+			join players p on p.id = mp.player_id
+			left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+			where mp.match_id = m.id
+		) parts on true
+		where m.status = 'live'
+		  and m.discipline = 'singles'
+		  and exists (select 1 from match_participants mp2
+		              join follows fo on fo.player_id = mp2.player_id
+		              where mp2.match_id = m.id and fo.user_id = $1)
+		order by m.scheduled_at asc nulls last, m.id
+		limit $2`,
+		userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanLiveMatch)
+}
+
+func scanLiveMatch(row pgx.CollectableRow) (LiveMatch, error) {
+	var (
+		m         LiveMatch
+		partsJSON string
+	)
+	if err := row.Scan(&m.ID, &m.Edition, &m.TournamentName, &m.Round,
+		&m.ScheduledAt, &m.Court, &m.Status, &m.Surface, &m.StartedAt,
+		&partsJSON); err != nil {
+		return m, err
+	}
+	sides, err := sidesFromJSON(partsJSON)
+	if err != nil {
+		return m, err
+	}
+	m.Sides = sides
+	return m, nil
+}
+
 // FlipLive переводит матч в live и кладёт событие в outbox.
 //
 // Guard одинаков для всех источников, включая ручные флипы: только из

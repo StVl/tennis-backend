@@ -8,11 +8,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewRouter собирает роутер. devEndpoints передаётся булевым, а не через
-// *config.Config: api не импортирует config, а Handler по договорённости держит
-// только пул. Ручные триггеры подключаются только когда флаг включён.
-func NewRouter(pool *pgxpool.Pool, devEndpoints bool) http.Handler {
-	handler := NewHandler(pool)
+// NewRouter собирает роутер. Ручные триггеры подключаются только когда включён
+// cfg.DevEndpoints — гейт стоит здесь, на регистрации маршрута, а не внутри
+// обработчика: выключенный флаг означает, что ручки нет вовсе, а не что она
+// отвечает 404.
+func NewRouter(pool *pgxpool.Pool, cfg HandlerConfig) http.Handler {
+	handler := NewHandler(pool, cfg)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -59,10 +60,11 @@ func NewRouter(pool *pgxpool.Pool, devEndpoints bool) http.Handler {
 			r.Delete("/follows/{slug}", handler.RemoveFollow)
 			r.Get("/home", handler.MyHome)
 			r.Get("/widget", handler.MyWidget)
+			r.Get("/live-matches", handler.MyLiveMatches)
 		})
 
 		// ручные триггеры live-статуса, только под DEV_ENDPOINTS_ENABLED
-		if devEndpoints {
+		if cfg.DevEndpoints {
 			r.Route("/dev", func(r chi.Router) {
 				r.Post("/matches/{id}/live", handler.DevMatchLive)
 				r.Post("/matches/{id}/finish", handler.DevMatchFinish)

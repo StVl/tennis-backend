@@ -156,10 +156,10 @@ func GetMatch(ctx context.Context, pool *pgxpool.Pool, id int64) (*Match, error)
 
 func scanMatch(row pgx.CollectableRow) (Match, error) {
 	var (
-		m          Match
-		liveState  string
-		partsJSON  string
-		setsJSON   string
+		m         Match
+		liveState string
+		partsJSON string
+		setsJSON  string
 	)
 	if err := row.Scan(&m.ID, &m.Edition, &m.TournamentName, &m.Round,
 		&m.ScheduledAt, &m.Court, &m.Status, &m.Surface,
@@ -167,22 +167,11 @@ func scanMatch(row pgx.CollectableRow) (Match, error) {
 		return m, err
 	}
 
-	var flat []flatParticipant
-	if err := json.Unmarshal([]byte(partsJSON), &flat); err != nil {
-		return m, fmt.Errorf("unmarshal participants: %w", err)
+	sides, err := sidesFromJSON(partsJSON)
+	if err != nil {
+		return m, err
 	}
-	bySide := map[int][]MatchPlayer{}
-	for _, fp := range flat {
-		bySide[fp.Side] = append(bySide[fp.Side], MatchPlayer{
-			Slug: fp.Slug, Name: fp.Name, LastName: fp.LastName, PhotoURL: fp.PhotoURL, Rank: fp.Rank,
-		})
-	}
-	m.Sides = []MatchSide{}
-	for side := 1; side <= 2; side++ {
-		if players, ok := bySide[side]; ok {
-			m.Sides = append(m.Sides, MatchSide{Side: side, Players: players})
-		}
-	}
+	m.Sides = sides
 
 	if err := json.Unmarshal([]byte(setsJSON), &m.Sets); err != nil {
 		return m, fmt.Errorf("unmarshal sets: %w", err)
@@ -197,6 +186,30 @@ func scanMatch(row pgx.CollectableRow) (Match, error) {
 		m.Live = json.RawMessage("null")
 	}
 	return m, nil
+}
+
+// sidesFromJSON разбирает json_agg участников в стороны матча.
+// Общий для Match и LiveMatch: форма sides у них одна, различаются только
+// поля счёта, которых у LiveMatch нет.
+func sidesFromJSON(raw string) ([]MatchSide, error) {
+	var flat []flatParticipant
+	if err := json.Unmarshal([]byte(raw), &flat); err != nil {
+		return nil, fmt.Errorf("unmarshal participants: %w", err)
+	}
+	bySide := map[int][]MatchPlayer{}
+	for _, fp := range flat {
+		bySide[fp.Side] = append(bySide[fp.Side], MatchPlayer{
+			Slug: fp.Slug, Name: fp.Name, LastName: fp.LastName, PhotoURL: fp.PhotoURL, Rank: fp.Rank,
+		})
+	}
+	// не nil: отсутствие стороны означает TBD, но сам массив клиент ждёт всегда
+	sides := []MatchSide{}
+	for side := 1; side <= 2; side++ {
+		if players, ok := bySide[side]; ok {
+			sides = append(sides, MatchSide{Side: side, Players: players})
+		}
+	}
+	return sides, nil
 }
 
 // scoreText собирает "6-4, 7-6(5)" из сетов (с точки зрения стороны 1).
