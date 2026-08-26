@@ -73,13 +73,18 @@ func trackedKeys(t *testing.T, pool *pgxpool.Pool) []string {
 	return keys
 }
 
+// Чистим и ДО, и после: иначе строки, оставшиеся от ручного прогона джоба,
+// попадают в тест и ломают счётчики. Отловлено ровно так.
 func cleanupSchedule(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	t.Cleanup(func() {
+	clean := func() {
 		_, _ = pool.Exec(ctx, `delete from live_schedule where source = $1`, livesource.SourceName)
 		_, _ = pool.Exec(ctx, `delete from live_ingest_runs where job = 'live-schedule'`)
-	})
+		_, _ = pool.Exec(ctx, `delete from live_unmatched where source = $1`, livesource.SourceName)
+	}
+	clean()
+	t.Cleanup(clean)
 }
 
 func at(d time.Duration) *time.Time {

@@ -159,6 +159,16 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		return fmt.Errorf("fetch fixtures: %w", fetchErr)
 	}
 
+	// Создание строк matches из фикстур. По умолчанию выключено: это
+	// ослабление правила 3 из docs/live-status-ingest.md, и решение за
+	// iOS-стороной. Ошибка здесь не валит прогон — расписание уже записано,
+	// а оно и есть основная задача Job A.
+	if u.cfg.CreateMatches {
+		if err := u.createMatches(ctx, page.Fixtures, startedAt); err != nil {
+			slog.Error("live-schedule: creating matches from fixtures failed", "error", err)
+		}
+	}
+
 	// Журнал прогонов растёт быстрее всех: тик раз в пять минут это около 288
 	// строк в сутки, почти все — «спим». Горизонт заведомо длиннее любого
 	// разумного простоя: на «предыдущий успешный прогон» опирается защита от
@@ -186,6 +196,114 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 		"without_start_time", withoutTime)
 	return nil
 }
+
+// createMatches превращает фикстуры в строки matches со статусом scheduled.
+//
+// Это единственное место, где сервис ДОБАВЛЯЕТ строки в matches, а не меняет
+// один столбец. Каждая проверка ниже отделяет «можно создать» от «угадали бы»,
+// и ни одна не необязательна.
+func (u *ScheduleUpdater) createMatches(ctx context.Context,
+	fixtures []livesource.Fixture, now time.Time) error {
+
+	// Убираем свои же протухшие строки до создания новых: иначе матч, который
+	// так и не состоялся, навсегда останется у обоих игроков «следующим».
+	if retired, err := storage.RetireCreatedMatches(ctx, u.pool,
+		now.Add(-createdMatchTTL)); err != nil {
+		slog.Error("live-schedule: retiring stale created matches failed", "error", err)
+	} else if retired > 0 {
+		slog.Info("live-schedule: retired stale created matches", "count", retired)
+	}
+
+	editionKeys := make([]string, 0, len(fixtures))
+	playerKeys := make([]string, 0, len(fixtures)*2)
+	for _, f := range fixtures {
+		if f.TournamentKey != "" {
+			editionKeys = append(editionKeys, f.TournamentKey)
+		}
+		playerKeys = append(playerKeys, f.PlayerKeys[0], f.PlayerKeys[1])
+	}
+	editions, err := storage.ResolveEditions(ctx, u.pool, livesource.SourceName, editionKeys)
+	if err != nil {
+		return fmt.Errorf("resolve editions: %w", err)
+	}
+	players, err := storage.ResolvePlayerKeys(ctx, u.pool, livesource.SourceName, playerKeys)
+	if err != nil {
+		return fmt.Errorf("resolve players: %w", err)
+	}
+
+	var created, exists, unknownRound, skipped int
+	for _, f := range fixtures {
+		// Квалификация: наши розыгрыши — основные сетки, и строки квалификации
+		// в них попадать не должны. В снятом срезе это 84 строки из 200, то
+		// есть случай массовый, а не краевой.
+		if f.IsQualifying {
+			skipped++
+			continue
+		}
+		// Без времени начала строка бесполезна: она не откроет окна наблюдения
+		// и не найдётся поиском по окну вокруг времени фикстуры.
+		if f.ScheduledAt == nil {
+			skipped++
+			continue
+		}
+		editionID, ok := editions[f.TournamentKey]
+		if !ok {
+			// Именно ЭТА очередь и пополняет db/live_edition_ids.sql.
+			// Угадывать розыгрыш нельзя: неверная догадка создаёт матч в
+			// чужой сетке.
+			_ = storage.RecordUnmatched(ctx, u.pool, livesource.SourceName,
+				storage.UnmatchedRow{
+					ExternalKey: f.ExternalKey,
+					PlayerKeys:  []string{f.PlayerKeys[0], f.PlayerKeys[1]},
+					RoundCode:   f.RoundCode,
+				}, "edition_unmapped", now)
+			skipped++
+			continue
+		}
+		p1, ok1 := players[f.PlayerKeys[0]]
+		p2, ok2 := players[f.PlayerKeys[1]]
+		if !ok1 || !ok2 {
+			// Создаём только то, где известны ОБА игрока: матч с одним
+			// участником невидим для поиска по игрокам.
+			skipped++
+			continue
+		}
+
+		_, outcome, err := storage.CreateMatchFromFixture(ctx, u.pool, storage.MatchDraft{
+			EditionID:   editionID,
+			RoundCode:   f.RoundCode,
+			ScheduledAt: *f.ScheduledAt,
+			PlayerIDs:   [2]int64{p1, p2},
+			ExternalKey: f.ExternalKey,
+		})
+		if err != nil {
+			return fmt.Errorf("create match %s: %w", f.ExternalKey, err)
+		}
+		switch outcome {
+		case storage.CreateDone:
+			created++
+		case storage.CreateExists:
+			exists++
+		case storage.CreateUnknownRound:
+			unknownRound++
+			_ = storage.RecordUnmatched(ctx, u.pool, livesource.SourceName,
+				storage.UnmatchedRow{
+					ExternalKey: f.ExternalKey,
+					PlayerKeys:  []string{f.PlayerKeys[0], f.PlayerKeys[1]},
+					RoundCode:   f.RoundCode,
+				}, "round_unmapped", now)
+		}
+	}
+
+	slog.Info("live-schedule: matches from fixtures",
+		"created", created, "already_existed", exists,
+		"unknown_round", unknownRound, "skipped", skipped)
+	return nil
+}
+
+// createdMatchTTL — насколько позже назначенного времени наша созданная строка
+// считается несостоявшейся.
+const createdMatchTTL = 48 * time.Hour
 
 // recordSkip оставляет строку прогона для тика, который ничего не потратил.
 func (u *ScheduleUpdater) recordSkip(ctx context.Context, reason string) {

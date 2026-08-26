@@ -29,6 +29,7 @@ type wireMatch struct {
 	EventStatus   string     `json:"event_status"`
 	Draw          string     `json:"draw"`
 	IsDoubles     bool       `json:"is_doubles"`
+	IsQualifying  bool       `json:"is_qualifying"`
 	RoundCode     string     `json:"round_code"`
 	ScheduledTime *time.Time `json:"scheduled_time"`
 	TournamentID  flexKey    `json:"tournament_id"`
@@ -156,6 +157,7 @@ func ParseFixtures(body []byte) (FixturePage, error) {
 			RoundCode:     row.RoundCode,
 			TournamentKey: string(row.TournamentID),
 			Tournament:    row.Tournament,
+			IsQualifying:  row.IsQualifying,
 			ScheduledAt:   row.ScheduledTime,
 		})
 	}
