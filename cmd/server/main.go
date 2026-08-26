@@ -12,8 +12,10 @@ import (
 
 	"github.com/StVl/tennis-backend/api"
 	"github.com/StVl/tennis-backend/internal/config"
+	"github.com/StVl/tennis-backend/internal/livesource"
 	"github.com/StVl/tennis-backend/internal/scheduler"
 	"github.com/StVl/tennis-backend/internal/storage"
+	"github.com/StVl/tennis-backend/internal/updater/live"
 	"github.com/StVl/tennis-backend/internal/updater/players"
 	"github.com/StVl/tennis-backend/internal/updater/tournaments"
 )
@@ -45,11 +47,32 @@ func run() error {
 	tournamentsUpdater := tournaments.New(pool)
 	playersUpdater := players.New(pool)
 
-	jobScheduler := scheduler.New(rootCtx, cfg.UpdateTimeout)
-	if err := jobScheduler.Register([]scheduler.Job{
+	// Фабрика, а не готовый клиент: счётчик запросов должен писать в строку
+	// прогона ЭТОГО цикла, а её id известен только внутри Update.
+	newLiveSource := func(onRequest func()) livesource.Source {
+		return livesource.NewClient(cfg.Live.BaseURL, cfg.Live.APIKey,
+			livesource.WithOnRequest(onRequest))
+	}
+	liveScheduleUpdater := live.NewSchedule(pool, newLiveSource, cfg.Live)
+
+	jobs := []scheduler.Job{
 		{Schedule: cfg.TournamentsCron, Updater: tournamentsUpdater},
 		{Schedule: cfg.PlayersCron, Updater: playersUpdater},
-	}); err != nil {
+		{
+			Schedule: cfg.Live.ScheduleCron,
+			Updater:  liveScheduleUpdater,
+			Timeout:  cfg.Live.UpdateTimeout,
+		},
+	}
+
+	// RUN_ONCE=<job> прогоняет один джоб и выходит. Ни нового бинаря, ни
+	// изменений в сборке Railway — и заодно это боевой рычаг «обновить сейчас».
+	if only := os.Getenv("RUN_ONCE"); only != "" {
+		return runOnce(rootCtx, jobs, only, cfg.UpdateTimeout)
+	}
+
+	jobScheduler := scheduler.New(rootCtx, cfg.UpdateTimeout)
+	if err := jobScheduler.Register(jobs); err != nil {
 		return err
 	}
 
@@ -96,4 +119,34 @@ func run() error {
 
 	slog.Info("application stopped")
 	return nil
+}
+
+// runOnce прогоняет один зарегистрированный джоб и возвращается.
+func runOnce(ctx context.Context, jobs []scheduler.Job, name string,
+	defaultTimeout time.Duration) error {
+
+	for _, job := range jobs {
+		if job.Updater.Name() != name {
+			continue
+		}
+		timeout := defaultTimeout
+		if job.Timeout > 0 {
+			timeout = job.Timeout
+		}
+		runCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		slog.Info("RUN_ONCE", "updater", name, "timeout", timeout)
+		if err := job.Updater.Update(runCtx); err != nil {
+			return fmt.Errorf("run once %s: %w", name, err)
+		}
+		slog.Info("RUN_ONCE finished", "updater", name)
+		return nil
+	}
+
+	available := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		available = append(available, job.Updater.Name())
+	}
+	return fmt.Errorf("RUN_ONCE=%q: unknown job; available: %v", name, available)
 }

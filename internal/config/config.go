@@ -17,6 +17,7 @@ type Config struct {
 	DBMaxConns       int32
 	DevEndpoints     bool
 	LiveMatchesLimit int
+	Live             LiveConfig
 }
 
 func Load() (*Config, error) {
@@ -39,6 +40,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse DB_MAX_CONNS: %w", err)
 	}
 
+	live, err := loadLive()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		HTTPPort:         httpPort,
 		DatabaseURL:      databaseURL,
@@ -48,6 +54,7 @@ func Load() (*Config, error) {
 		DBMaxConns:       dbMaxConns,
 		DevEndpoints:     envBool("DEV_ENDPOINTS_ENABLED", false),
 		LiveMatchesLimit: envInt("LIVE_MATCHES_LIMIT", 50),
+		Live:             live,
 	}, nil
 }
 
@@ -81,6 +88,21 @@ func envInt(key string, fallback int) int {
 	parsed, err := strconv.Atoi(raw)
 	if err != nil || parsed < 1 {
 		slog.Warn("malformed integer env var, using default",
+			"key", key, "value", raw, "default", fallback)
+		return fallback
+	}
+	return parsed
+}
+
+// envDuration — как envInt: кривое значение логируется и берётся default.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		slog.Warn("malformed duration env var, using default",
 			"key", key, "value", raw, "default", fallback)
 		return fallback
 	}

@@ -142,10 +142,12 @@ create table if not exists live_schedule (
   -- на live-борте бывает null (9 из 19) — поэтому создание матчей (§8) на него
   -- опирается, а live-путь не имеет права.
   tournament_key text,
-  -- null = порядок игры ещё не опубликован. Это РЕАЛЬНОЕ состояние, а не пробел:
-  -- такую фикстуру смотрим весь день по event_date.
+  -- null = порядок игры ещё не опубликован. Такая фикстура окна опроса НЕ
+  -- открывает: колонки с одной лишь датой здесь нет, потому что на
+  -- /matches?status=upcoming её и не приходит — event_date есть только в схеме
+  -- GET /fixtures, а туда мы не ходим (там нет фильтра player=, ради которого
+  -- 101 игрок стоит 3 запроса).
   scheduled_at  timestamptz,
-  event_date    date,
   player_keys   text[]      not null,        -- id игроков у источника
   round_code    text,
   tournament    text,
@@ -154,7 +156,6 @@ create table if not exists live_schedule (
 );
 
 create index if not exists live_schedule_scheduled_idx on live_schedule (scheduled_at);
-create index if not exists live_schedule_date_idx on live_schedule (event_date);
 
 -- ---------------------------------------------------------------------------
 -- Очередь ревью и исходящие события.

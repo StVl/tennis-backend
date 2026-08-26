@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// SourceName — имя источника в external_ids и live_* таблицах.
+const SourceName = "livetennisapi"
+
 // State — что источник говорит про матч.
 //
 // Значения 'scheduled' здесь намеренно НЕТ. Его никто не порождает: расписание
