@@ -214,6 +214,18 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 | `POST` | `/v1/dev/matches/{id}/live` | пометить матч живым: `200` + состояние, `204` если уже живой, `409` если матч флипать нельзя |
 | `POST` | `/v1/dev/matches/{id}/finish` | вернуть статус, который был до флипа: `200`, `204` если матч не был флипнут |
 | `GET` | `/v1/dev/matches/{id}/live-state` | текущий `status` матча и наш флаг, если он есть |
+| `POST` | `/v1/dev/live/ingest` | прогнать сохранённый борт источника через **полный** цикл ingest'а |
+
+`POST /v1/dev/live/ingest` принимает телом сырой ответ `GET /matches?status=live` и прогоняет ровно тот же код, что и поллер, — но из файла и без единого запроса к вендору. Это единственный способ проверить переход `scheduled → live → прежний статус` с событиями в outbox, не дожидаясь настоящего живого матча и не тратя суточную квоту:
+
+```bash
+# подъём карточки
+curl -X POST localhost:8080/v1/dev/live/ingest --data-binary @board_live.json
+# три борта без этого матча -> три пропуска -> карточка гаснет
+curl -X POST localhost:8080/v1/dev/live/ingest --data-binary @board_without.json
+```
+
+Ответ — счётчики цикла: `rows_parsed`, `in_scope`, `matched`, `dropped`, `entered`, `left` и `guard` (непустой, если сработала защита от пустого борта).
 
 ```json
 {

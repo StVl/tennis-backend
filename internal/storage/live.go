@@ -349,6 +349,22 @@ func GetLiveMatchState(ctx context.Context, pool *pgxpool.Pool, matchID int64) (
 	return &s, nil
 }
 
+// AppendLiveEvent — событие outbox'а вне транзакции флипа: используется для
+// suspended/resumed, где статус матча не меняется.
+func AppendLiveEvent(ctx context.Context, pool *pgxpool.Pool, matchID int64,
+	event, reason string, at time.Time) error {
+
+	var r *string
+	if reason != "" {
+		r = &reason
+	}
+	_, err := pool.Exec(ctx, `
+		insert into live_events (match_id, event, reason, created_at)
+		values ($1, $2, $3, $4)`,
+		matchID, event, r, at)
+	return err
+}
+
 // insertLiveEvent — строка outbox'а. Пишется в той же транзакции, что и смена
 // статуса: иначе падение между ними либо теряет пуш, либо отправляет пуш о
 // переходе, которого не было.

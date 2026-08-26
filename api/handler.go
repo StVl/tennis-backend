@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,6 +18,9 @@ type HandlerConfig struct {
 	// потолок: сколько Live Activity держать одновременно, решает клиент.
 	// Ответ честно сообщает total и truncated, если лимит сработал.
 	LiveMatchesLimit int
+	// Для dev-эндпоинта повтора борта: те же значения, что у поллера.
+	LiveMatchWindow time.Duration
+	LiveMaxLiveAge  time.Duration
 }
 
 type Handler struct {

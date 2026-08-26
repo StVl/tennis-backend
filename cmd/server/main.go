@@ -54,6 +54,7 @@ func run() error {
 			livesource.WithOnRequest(onRequest))
 	}
 	liveScheduleUpdater := live.NewSchedule(pool, newLiveSource, cfg.Live)
+	livePollUpdater := live.NewPoll(pool, newLiveSource, cfg.Live)
 
 	jobs := []scheduler.Job{
 		{Schedule: cfg.TournamentsCron, Updater: tournamentsUpdater},
@@ -61,6 +62,11 @@ func run() error {
 		{
 			Schedule: cfg.Live.ScheduleCron,
 			Updater:  liveScheduleUpdater,
+			Timeout:  cfg.Live.UpdateTimeout,
+		},
+		{
+			Schedule: cfg.Live.Cron,
+			Updater:  livePollUpdater,
 			Timeout:  cfg.Live.UpdateTimeout,
 		},
 	}
@@ -89,6 +95,8 @@ func run() error {
 		Handler: api.NewRouter(pool, api.HandlerConfig{
 			DevEndpoints:     cfg.DevEndpoints,
 			LiveMatchesLimit: cfg.LiveMatchesLimit,
+			LiveMatchWindow:  cfg.Live.MatchWindow,
+			LiveMaxLiveAge:   cfg.Live.MaxLiveAge,
 		}),
 	}
 
