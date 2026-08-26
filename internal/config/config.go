@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -14,6 +15,7 @@ type Config struct {
 	PlayersCron     string
 	UpdateTimeout   time.Duration
 	DBMaxConns      int32
+	DevEndpoints    bool
 }
 
 func Load() (*Config, error) {
@@ -43,7 +45,25 @@ func Load() (*Config, error) {
 		PlayersCron:     playersCron,
 		UpdateTimeout:   updateTimeout,
 		DBMaxConns:      dbMaxConns,
+		DevEndpoints:    envBool("DEV_ENDPOINTS_ENABLED", false),
 	}, nil
+}
+
+// envBool читает булев флаг. Кривое значение НЕ роняет процесс: Load() возвращает
+// ошибку, а на ошибку Load main вызывает os.Exit(1) — то есть опечатка во флаге
+// поллера уронила бы весь HTTP-сервис. Логируем и берём default.
+func envBool(key string, fallback bool) bool {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		slog.Warn("malformed boolean env var, using default",
+			"key", key, "value", raw, "default", fallback)
+		return fallback
+	}
+	return parsed
 }
 
 func envOrDefault(key, fallback string) string {
