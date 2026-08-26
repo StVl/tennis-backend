@@ -64,8 +64,15 @@ create table if not exists live_observations (
   -- прогон, в котором наблюдение получено. Отсутствие матча считается по
   -- прогонам, а не по времени: прогоны строго упорядочены, поэтому
   -- «три подряд» — точное утверждение, а не эвристика по таймстемпам.
-  run_id      bigint      not null references live_ingest_runs(id),
-  match_id    bigint      not null references matches(id),
+  --
+  -- Оба FK — on delete cascade, и это обязательно. Без каскада наша служебная
+  -- таблица начинает БЛОКИРОВАТЬ чужие удаления: пайплайн не смог бы удалить
+  -- матч или розыгрыш (удаление розыгрыша каскадится в matches и упиралось бы
+  -- сюда), а чистка старых прогонов из Phase 9 упиралась бы в run_id.
+  -- Ровно поэтому у external_ids.entity_id FK нет вообще: FK, который ломает
+  -- импорт пайплайна, невосстановим, а висячий маппинг — восстановим.
+  run_id      bigint      not null references live_ingest_runs(id) on delete cascade,
+  match_id    bigint      not null references matches(id) on delete cascade,
   source      text        not null,
   -- 'on_court' | 'finished' | 'suspended'.
   -- Значения 'scheduled' здесь быть НЕ ДОЛЖНО: Job A в эту таблицу не пишет

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -32,6 +33,16 @@ func langParam(r *http.Request) string {
 		return lang
 	}
 	return "en"
+}
+
+// matchIDParam разбирает {id} из пути. false означает, что ответ уже записан.
+func matchIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id", "match id must be an integer")
+		return 0, false
+	}
+	return id, true
 }
 
 func intParam(r *http.Request, name string, def, max int) int {

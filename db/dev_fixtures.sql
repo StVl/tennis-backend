@@ -8,12 +8,15 @@
 -- Применить:
 --   docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/dev_fixtures.sql
 -- Убрать:
---   delete from matches where import_key like 'devfix_%';   -- participants уйдут по FK
+--   delete from matches where import_key like 'devfix\_%';  -- participants уйдут по FK
+--   (обратный слэш обязателен: _ в LIKE — это шаблон «любой один символ»)
 --
--- Идемпотентно: import_key уникален, повторный прогон ничего не меняет.
--- scheduled_at задаётся относительно now(), чтобы фикстура не устаревала и
--- всегда попадала в окно WATCHING. Правило «никаких now() в SQL этой фичи»
--- относится к боевому коду, а не к dev-скрипту.
+-- Идемпотентно и ОБНОВЛЯЕТ время: повторный прогон сдвигает scheduled_at
+-- относительно текущего now(). Это не косметика — с `do nothing` время
+-- застывало бы на моменте первого применения, и через сутки фикстура
+-- переставала бы попадать в окно WATCHING, на котором держатся проверки
+-- Phase 7. Правило «никаких now() в SQL этой фичи» относится к боевому коду,
+-- а не к dev-скрипту.
 
 begin;
 
@@ -32,7 +35,8 @@ inserted as (
   select e.id, f.round_code, now() + make_interval(hours => f.offset_hours),
          'scheduled', f.import_key
   from fixtures f cross join edition e
-  on conflict (import_key) do nothing
+  on conflict (import_key) do update
+    set scheduled_at = excluded.scheduled_at, status = excluded.status
   returning id, import_key
 )
 insert into match_participants (match_id, side, slot, player_id)
@@ -51,6 +55,6 @@ select m.id, m.import_key, m.status, m.round_code, m.scheduled_at,
 from matches m
 join match_participants mp on mp.match_id = m.id
 join players p on p.id = mp.player_id
-where m.import_key like 'devfix_%'
+where m.import_key like 'devfix\_%'
 group by m.id, m.import_key, m.status, m.round_code, m.scheduled_at
 order by m.scheduled_at;

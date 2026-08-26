@@ -2,10 +2,7 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 	"time"
-
-	"github.com/go-chi/chi/v5"
 
 	"github.com/StVl/tennis-backend/internal/storage"
 )
@@ -71,9 +68,8 @@ func (h *Handler) ListMatches(w http.ResponseWriter, r *http.Request) {
 
 // GetMatch — GET /v1/matches/{id}
 func (h *Handler) GetMatch(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_id", "match id must be an integer")
+	id, ok := matchIDParam(w, r)
+	if !ok {
 		return
 	}
 	m, err := storage.GetMatch(r.Context(), h.pool, id)

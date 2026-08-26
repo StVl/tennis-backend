@@ -12,9 +12,9 @@ DATABASE_URL="postgresql://..." go run ./cmd/server   # DATABASE_URL is mandator
 
 There are no tests in the repo yet (`go test ./...` finds nothing). When adding them: `go test ./internal/storage -run TestName`.
 
-`gofmt -l .` currently reports drift in `internal/scheduler/scheduler.go` and `internal/storage/{feed,matches,players,tournaments}.go` (misaligned `var`/struct blocks). Format files you touch; don't reformat the rest as drive-by noise.
+`gofmt -l .` currently reports drift in `internal/scheduler/scheduler.go` and `internal/storage/{matches,tournaments}.go` (misaligned `var`/struct blocks). Format files you touch; don't reformat the rest as drive-by noise.
 
-Smoke-testing endpoints requires a live Postgres — there is no local DB setup, no migrations, and no fixtures in this repo. Schema and data pipeline live in [tennis-data-storage](https://github.com/StVl/tennis-data-storage) (`db/schema.sql`, `docs/db_schema.md`, `docs/api_design.md`); the iOS client is [tennis-tracker](https://github.com/StVl/tennis-tracker).
+Smoke-testing endpoints requires a live Postgres. There are still no migrations here — the canonical schema lives in [tennis-data-storage](https://github.com/StVl/tennis-data-storage) (`db/schema.sql`, `docs/db_schema.md`, `docs/api_design.md`) — but `db/` now holds the live-ingest DDL that has to be carried over there (`live_ingest.sql`, `live_external_ids.sql`) plus `dev_fixtures.sql` for local work. Apply them with `docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/<file>.sql`. A local Postgres runs in Docker as `tennis-pg` on port **55432** (`postgresql://tennis:tennis@localhost:55432/tennis`); there is no `psql` on the host. The iOS client is [tennis-tracker](https://github.com/StVl/tennis-tracker).
 
 ## Architecture
 
