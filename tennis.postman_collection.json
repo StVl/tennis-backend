@@ -1,0 +1,511 @@
+{
+  "info": {
+    "name": "tennis",
+    "description": "tennis-backend — Go API для iOS-приложения и виджета tennis-tracker.\n\nПеременные коллекции:\n- `baseUrl` — по умолчанию `http://localhost:8080`, для Railway подставь свой хост;\n- `token` — заполняется автоматически после `POST /v1/users` (тест-скрипт кладёт его в переменную коллекции);\n- `playerSlug`, `otherSlug`, `editionSlug`, `tournamentSlug`, `matchId`, `lang`, `tz` — подстановки в пути и query.\n\nСоглашения: списки приходят как `{\"items\": [...]}`, ошибки — `{\"error\": {\"code\", \"message\"}}`, `?lang=ru|en` (default `en`), `?tz=Area/City` задаёт «сегодня».\n\nВажно: `/v1/tournaments/{slug}` и `/draw` принимают слаг **розыгрыша** (`wimbledon_2026`), а `/history` — слаг **турнира-бренда** (`wimbledon`).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "playerSlug", "value": "sinner", "type": "string" },
+    { "key": "otherSlug", "value": "alcaraz", "type": "string" },
+    { "key": "editionSlug", "value": "wimbledon_2026", "type": "string" },
+    { "key": "tournamentSlug", "value": "wimbledon", "type": "string" },
+    { "key": "matchId", "value": "1", "type": "string" },
+    { "key": "lang", "value": "en", "type": "string" },
+    { "key": "tz", "value": "Europe/Belgrade", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Сервисные",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Пинг БД: `{\"status\":\"ok\"}` либо 503."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /hello",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/hello",
+              "host": ["{{baseUrl}}"],
+              "path": ["hello"]
+            },
+            "description": "Smoke-тест, БД не трогает."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Композитные (экран одним запросом)",
+      "item": [
+        {
+          "name": "GET /v1/home",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/home?player_ids={{playerSlug}},{{otherSlug}}&lang={{lang}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "home"],
+              "query": [
+                {
+                  "key": "player_ids",
+                  "value": "{{playerSlug}},{{otherSlug}}",
+                  "description": "CSV слагов подписок из App Group; порядок сохраняется в your_season. Пустой список → режим онбординга."
+                },
+                { "key": "lang", "value": "{{lang}}", "description": "ru|en, default en" }
+              ]
+            },
+            "description": "Главный экран целиком: `your_season` (карточки подписок с ближайшим матчем или, если матча нет, ближайшим турниром) + `all_players` — **весь ростер** с `rank`, `rank_delta` и флагом `followed`, отсортированный по рейтингу."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/widget",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/widget?player_ids={{playerSlug}},{{otherSlug}}&tz={{tz}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "widget"],
+              "query": [
+                { "key": "player_ids", "value": "{{playerSlug}},{{otherSlug}}", "description": "CSV слагов подписок" },
+                { "key": "tz", "value": "{{tz}}", "description": "Area/City — в какой таймзоне считать «сегодня». Неизвестная зона → 400 bad_tz." }
+              ]
+            },
+            "description": "Готовый таймлайн виджета. `state`: `rows | split | no_follows | no_matches`; максимум 3 строки; при `split` в `today_column` до 5 матчей не-подписанных, отсортированных по лучшему рейтингу участника."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Игроки",
+      "item": [
+        {
+          "name": "GET /v1/players",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/players?tracked=true&lang={{lang}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "players"],
+              "query": [
+                { "key": "tracked", "value": "true", "description": "default true (только ростер); false — все игроки, включая соперников извне" },
+                { "key": "search", "value": "sin", "description": "подстрока имени, регистронезависимо", "disabled": true },
+                { "key": "lang", "value": "{{lang}}" }
+              ]
+            },
+            "description": "Список игроков, отсортирован по рейтингу: slug, имя, фото, `rank`, `rank_delta`, стиль."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/players/{slug}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/players/{{playerSlug}}?include=last_matches,next_match,next_tournament&lang={{lang}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "players", "{{playerSlug}}"],
+              "query": [
+                {
+                  "key": "include",
+                  "value": "last_matches,next_match,next_tournament",
+                  "description": "CSV; любое другое значение → 400 bad_include. last_matches — 3 последних сыгранных, next_match — ближайший scheduled/live, next_tournament — ближайший upcoming."
+                },
+                { "key": "lang", "value": "{{lang}}" }
+              ]
+            },
+            "description": "Полный профиль игрока + опциональные блоки детального экрана через `include`."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/players/{slug}/matches",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/players/{{playerSlug}}/matches?status=completed&limit=20&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "players", "{{playerSlug}}", "matches"],
+              "query": [
+                { "key": "status", "value": "completed", "description": "CSV из scheduled,live,completed,cancelled; пусто = все. Неизвестное значение → 400 bad_status." },
+                { "key": "limit", "value": "20", "description": "default 50, max 200" },
+                { "key": "offset", "value": "0" }
+              ]
+            },
+            "description": "Матчи **глазами игрока**: `opponent`, `result` (won/lost), `score_text` с его стороны. Только `status=completed` → новые сверху, иначе ближайшие сверху."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/players/{slug}/tournaments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/players/{{playerSlug}}/tournaments?status=upcoming,ongoing",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "players", "{{playerSlug}}", "tournaments"],
+              "query": [
+                { "key": "status", "value": "upcoming,ongoing", "description": "CSV из upcoming,ongoing,completed; пусто = все" }
+              ]
+            },
+            "description": "Розыгрыши, на которые игрок заявлен: даты, покрытие, посев."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/players/{slug}/ranking-history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/players/{{playerSlug}}/ranking-history",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "players", "{{playerSlug}}", "ranking-history"]
+            },
+            "description": "Снапшоты рейтинга по датам: `rank`, `points`, `race_points` — под график."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/players/{a}/h2h/{b}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/players/{{playerSlug}}/h2h/{{otherSlug}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "players", "{{playerSlug}}", "h2h", "{{otherSlug}}"]
+            },
+            "description": "Личные встречи глазами первого игрока: `{\"wins\", \"losses\", \"matches\": [...]}`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Турниры и рейтинг",
+      "item": [
+        {
+          "name": "GET /v1/tournaments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/tournaments?status=upcoming,ongoing",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tournaments"],
+              "query": [
+                { "key": "status", "value": "upcoming,ongoing", "description": "CSV из upcoming,ongoing,completed. Статус вычисляется из дат на сервере." },
+                { "key": "year", "value": "2026", "disabled": true }
+              ]
+            },
+            "description": "Список розыгрышей (editions): слаги розыгрыша и турнира, даты, покрытие, локация, лого, чемпион/финалист у завершённых."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/tournaments/{edition_slug}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/tournaments/{{editionSlug}}?lang={{lang}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tournaments", "{{editionSlug}}"],
+              "query": [{ "key": "lang", "value": "{{lang}}" }]
+            },
+            "description": "Карточка **розыгрыша** (`wimbledon_2026`): описание, `conditions`, draw_size, призовой фонд, чемпион/финалист и `entries` — заявленные игроки с посевом и текущим рейтингом."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/tournaments/{edition_slug}/draw",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/tournaments/{{editionSlug}}/draw?lang={{lang}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tournaments", "{{editionSlug}}", "draw"],
+              "query": [{ "key": "lang", "value": "{{lang}}" }]
+            },
+            "description": "Сетка розыгрыша: `{\"rounds\": [{\"round\", \"label\", \"matches\": [...]}]}` — раунды в турнирном порядке R1 → F, внутри по позиции в сетке."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/tournaments/{tournament_slug}/history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/tournaments/{{tournamentSlug}}/history",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tournaments", "{{tournamentSlug}}", "history"]
+            },
+            "description": "История розыгрышей **бренда** (`wimbledon`, без года) по годам: чемпион и финалист."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/rankings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/rankings?tour=atp&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "rankings"],
+              "query": [
+                { "key": "tour", "value": "atp", "description": "default atp" },
+                { "key": "limit", "value": "100", "description": "default 100, max 500" }
+              ]
+            },
+            "description": "Текущий рейтинг: место, очки, race-очки, `rank_delta` к предыдущему снапшоту."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/play-styles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/play-styles?lang={{lang}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "play-styles"],
+              "query": [{ "key": "lang", "value": "{{lang}}" }]
+            },
+            "description": "Справочник стилей игры с локализованными описаниями."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Матчи",
+      "item": [
+        {
+          "name": "GET /v1/matches",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/matches?date=today&tz={{tz}}&limit=50&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "matches"],
+              "query": [
+                { "key": "date", "value": "today", "description": "today | YYYY-MM-DD; день считается в tz. Неверный формат → 400 bad_date." },
+                { "key": "tz", "value": "{{tz}}", "description": "Area/City; действует вместе с date. Неизвестная зона → 400 bad_tz." },
+                { "key": "status", "value": "live", "description": "CSV из scheduled,live,completed,cancelled", "disabled": true },
+                { "key": "player", "value": "{{playerSlug}}", "disabled": true },
+                { "key": "edition", "value": "{{editionSlug}}", "disabled": true },
+                { "key": "sort", "value": "best_rank", "description": "start_at (default) | best_rank — порядок колонки TODAY", "disabled": true },
+                { "key": "limit", "value": "50", "description": "default 50, max 200" },
+                { "key": "offset", "value": "0" }
+              ]
+            },
+            "description": "Нейтральная форма матча (не глазами игрока): `sides`, `sets` (`[side1_games, side2_games, tiebreak_loser_points|null]`), `winner_side`, `outcome` (`normal|retirement|walkover|default`), `score_text` со стороны side 1. Отсутствие стороны в `sides` = TBD; `live` заполнен только при `status=live`."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /v1/matches/{id}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/matches/{{matchId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "matches", "{{matchId}}"]
+            },
+            "description": "Один матч в той же форме. Нечисловой id → 400 bad_id."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Пользователи",
+      "item": [
+        {
+          "name": "POST /v1/users (регистрация)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// токен показывается один раз — сразу кладём его в переменную коллекции",
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    if (body.token) {",
+                  "        pm.collectionVariables.set('token', body.token);",
+                  "        console.log('token сохранён:', body.token);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"device_id\": \"postman-dev-1\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Анонимная регистрация. Тело опционально. Ответ 201: `{\"user_id\", \"token\"}` — токен `tt_...` отдаётся **один раз**, в БД лежит только его sha256. Тест-скрипт кладёт его в переменную коллекции `token`."
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/users/me (Bearer)",
+          "description": "Вся подпапка ходит с `Authorization: Bearer {{token}}`. Без токена или с неизвестным — 401 `unauthorized`.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+          },
+          "item": [
+            {
+              "name": "GET /v1/users/me",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me"]
+                },
+                "description": "Профиль: `user_id`, `email` (null до привязки), `settings`, `created_at`, `follows_count`."
+              },
+              "response": []
+            },
+            {
+              "name": "GET /v1/users/me/follows",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me/follows",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me", "follows"]
+                },
+                "description": "Подписки в порядке добавления: slug, имя, фото, дата."
+              },
+              "response": []
+            },
+            {
+              "name": "PUT /v1/users/me/follows (заменить список)",
+              "request": {
+                "method": "PUT",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"player_slugs\": [\"{{playerSlug}}\", \"{{otherSlug}}\"]\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me/follows",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me", "follows"]
+                },
+                "description": "Онбординг: заменяет весь список одной транзакцией, порядок массива становится порядком подписок. Ответ: итоговый `items` + `unknown_slugs`. Кривое тело → 400 `bad_body`."
+              },
+              "response": []
+            },
+            {
+              "name": "PUT /v1/users/me/follows/{slug} (подписаться)",
+              "request": {
+                "method": "PUT",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me/follows/{{playerSlug}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me", "follows", "{{playerSlug}}"]
+                },
+                "description": "Идемпотентно, 204. Если игрока нет — 404 `not_found`."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE /v1/users/me/follows/{slug} (отписаться)",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me/follows/{{playerSlug}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me", "follows", "{{playerSlug}}"]
+                },
+                "description": "Идемпотентно, 204."
+              },
+              "response": []
+            },
+            {
+              "name": "GET /v1/users/me/home",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me/home?lang={{lang}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me", "home"],
+                  "query": [{ "key": "lang", "value": "{{lang}}" }]
+                },
+                "description": "То же, что `/v1/home`, но подписки берутся из БД (порядок = порядок добавления). Формат ответа идентичен."
+              },
+              "response": []
+            },
+            {
+              "name": "GET /v1/users/me/widget",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/users/me/widget?tz={{tz}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["v1", "users", "me", "widget"],
+                  "query": [{ "key": "tz", "value": "{{tz}}" }]
+                },
+                "description": "То же, что `/v1/widget`, но подписки из БД."
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
