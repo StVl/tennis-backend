@@ -63,6 +63,58 @@ type LiveConfig struct {
 	CreateMatches bool
 }
 
+// PushConfig — доставка Live Activity (Task 2).
+type PushConfig struct {
+	Enabled  bool
+	Cron     string
+	KeyID    string
+	TeamID   string
+	BundleID string
+	// Путь к .p8. Файл, а не содержимое в переменной: ключ многострочный, и
+	// переносы в env переживают не всякий деплой.
+	KeyPath string
+	// Хост Apple. Токен sandbox на боевом хосте даёт BadDeviceToken, причём
+	// сообщение об этом ни на что не указывает.
+	Host          string
+	BatchSize     int
+	MaxAttempts   int
+	DismissAfter  time.Duration
+	MaxSessionAge time.Duration
+	UpdateTimeout time.Duration
+}
+
+func loadPush() (PushConfig, error) {
+	c := PushConfig{
+		Enabled:       envBool("PUSH_ENABLED", false),
+		Cron:          envOrDefault("PUSH_CRON", "* * * * *"),
+		KeyID:         os.Getenv("APNS_KEY_ID"),
+		TeamID:        os.Getenv("APNS_TEAM_ID"),
+		BundleID:      os.Getenv("APNS_BUNDLE_ID"),
+		KeyPath:       os.Getenv("APNS_KEY_PATH"),
+		Host:          envOrDefault("APNS_HOST", "https://api.sandbox.push.apple.com"),
+		BatchSize:     envInt("PUSH_BATCH_SIZE", 50),
+		MaxAttempts:   envInt("PUSH_MAX_ATTEMPTS", 5),
+		DismissAfter:  envDuration("PUSH_DISMISS_AFTER", 30*time.Second),
+		MaxSessionAge: envDuration("PUSH_MAX_SESSION_AGE", 6*time.Hour),
+		UpdateTimeout: envDuration("PUSH_UPDATE_TIMEOUT", 45*time.Second),
+	}
+	if !c.Enabled {
+		return c, nil
+	}
+	for name, v := range map[string]string{
+		"APNS_KEY_ID": c.KeyID, "APNS_TEAM_ID": c.TeamID,
+		"APNS_BUNDLE_ID": c.BundleID, "APNS_KEY_PATH": c.KeyPath,
+	} {
+		if v == "" {
+			return c, fmt.Errorf("%s is required when PUSH_ENABLED is true", name)
+		}
+	}
+	if _, err := cron.ParseStandard(c.Cron); err != nil {
+		return c, fmt.Errorf("parse PUSH_CRON: %w", err)
+	}
+	return c, nil
+}
+
 func loadLive() (LiveConfig, error) {
 	c := LiveConfig{
 		Enabled:            envBool("LIVE_POLL_ENABLED", false),

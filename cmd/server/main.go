@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/StVl/tennis-backend/api"
+	"github.com/StVl/tennis-backend/internal/apns"
 	"github.com/StVl/tennis-backend/internal/config"
 	"github.com/StVl/tennis-backend/internal/livesource"
 	"github.com/StVl/tennis-backend/internal/scheduler"
@@ -56,6 +58,12 @@ func run() error {
 	liveScheduleUpdater := live.NewSchedule(pool, newLiveSource, cfg.Live)
 	livePollUpdater := live.NewPoll(pool, newLiveSource, cfg.Live)
 
+	pushSender, err := newPushSender(cfg.Push)
+	if err != nil {
+		return err
+	}
+	livePushUpdater := live.NewPush(pool, pushSender, cfg.Push)
+
 	jobs := []scheduler.Job{
 		{Schedule: cfg.TournamentsCron, Updater: tournamentsUpdater},
 		{Schedule: cfg.PlayersCron, Updater: playersUpdater},
@@ -68,6 +76,11 @@ func run() error {
 			Schedule: cfg.Live.Cron,
 			Updater:  livePollUpdater,
 			Timeout:  cfg.Live.UpdateTimeout,
+		},
+		{
+			Schedule: cfg.Push.Cron,
+			Updater:  livePushUpdater,
+			Timeout:  cfg.Push.UpdateTimeout,
 		},
 	}
 
@@ -127,6 +140,28 @@ func run() error {
 
 	slog.Info("application stopped")
 	return nil
+}
+
+// newPushSender собирает клиент APNs. При выключенном рубильнике возвращает
+// заглушку: ключа тогда нет, и требовать его от выключенной фичи незачем.
+func newPushSender(cfg config.PushConfig) (live.Sender, error) {
+	if !cfg.Enabled {
+		return disabledSender{}, nil
+	}
+	key, err := os.ReadFile(cfg.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read APNS_KEY_PATH: %w", err)
+	}
+	return apns.New(apns.Config{
+		KeyID: cfg.KeyID, TeamID: cfg.TeamID, BundleID: cfg.BundleID,
+		PrivateKeyPEM: key, Host: cfg.Host,
+	})
+}
+
+type disabledSender struct{}
+
+func (disabledSender) Send(context.Context, apns.Notification) error {
+	return errors.New("push delivery is disabled (PUSH_ENABLED=false)")
 }
 
 // runOnce прогоняет один зарегистрированный джоб и возвращается.

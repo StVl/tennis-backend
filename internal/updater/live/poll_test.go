@@ -49,6 +49,7 @@ func resetLiveState(t *testing.T, pool *pgxpool.Pool) {
 	clean := func() {
 		for _, q := range []string{
 			`delete from live_events`, `delete from live_observations`,
+			`delete from live_activity_sessions`, `delete from device_push_tokens`,
 			`delete from live_flags`, `delete from live_ingest_runs`,
 			`delete from live_unmatched`,
 			`update matches set status = 'scheduled' where import_key like 'devfix\_%'`,

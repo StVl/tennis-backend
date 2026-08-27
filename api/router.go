@@ -61,6 +61,8 @@ func NewRouter(pool *pgxpool.Pool, cfg HandlerConfig) http.Handler {
 			r.Get("/home", handler.MyHome)
 			r.Get("/widget", handler.MyWidget)
 			r.Get("/live-matches", handler.MyLiveMatches)
+			r.Put("/push-token", handler.RegisterPushToken)
+			r.Put("/live-activities/{id}", handler.RegisterActivityToken)
 		})
 
 		// ручные триггеры live-статуса, только под DEV_ENDPOINTS_ENABLED

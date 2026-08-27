@@ -17,6 +17,7 @@ const (
 	liveLockClass    = 0x4C56 // "LV"
 	LiveLockSchedule = 1
 	LiveLockPoll     = 2
+	LiveLockPush     = 3
 )
 
 // LiveLock — захваченная advisory-блокировка вместе с соединением, на котором

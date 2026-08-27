@@ -18,6 +18,7 @@ type Config struct {
 	DevEndpoints     bool
 	LiveMatchesLimit int
 	Live             LiveConfig
+	Push             PushConfig
 }
 
 func Load() (*Config, error) {
@@ -45,6 +46,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	push, err := loadPush()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		HTTPPort:         httpPort,
 		DatabaseURL:      databaseURL,
@@ -55,6 +61,7 @@ func Load() (*Config, error) {
 		DevEndpoints:     envBool("DEV_ENDPOINTS_ENABLED", false),
 		LiveMatchesLimit: envInt("LIVE_MATCHES_LIMIT", 50),
 		Live:             live,
+		Push:             push,
 	}, nil
 }
 
