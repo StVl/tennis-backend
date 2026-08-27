@@ -10,68 +10,67 @@
 -- они спонсорские ("Western & Southern Open", "Rolex Paris Masters"), у
 -- источника городские ("Cincinnati", "Paris"), и это ровно то нечёткое
 -- сопоставление, ради устранения которого вся схема с external_ids и заведена.
+
+-- ЧТО ИМЕННО ИДЕНТИФИЦИРУЕТ id ТУРНИРА У ИСТОЧНИКА.
+-- Каталог /tournaments отдаёт РОВНО ОДИН id на турнир в пределах тура, а
+-- разные туры и разряды одного события — это разные id:
 --
--- ВАЖНО ПРО ФОРМУ ЭТОГО МАППИНГА. У источника id турнира — НЕ один на розыгрыш:
---   * в каталоге /tournaments на каждый турнир приходится пара id
---     (Cincinnati 1210/1211, Paris 1725/1726, ATP Finals 2794/2795);
---   * в реальных ответах по матчам встречаются ДРУГИЕ id того же турнира
---     (Cincinnati 1209, US Open 1217/1218/1221) — каталожные и «боевые» id
---     не совпадают;
---   * один id может нести и основную сетку, и квалификацию сразу
---     (Winston-Salem 1214 отдаёт и is_qualifying=false, и true).
--- Поэтому связь N:1, как и у игроков: много внешних ключей на один наш
--- розыгрыш. Не превращать индекс в unique.
+--   US Open 1217 = atp singles, 1218 = wta singles, 1221 = doubles
+--   Cincinnati   1209 = wta singles, 1210 = atp singles
 --
--- ОСНОВНАЯ СЕТКА US OPEN ЕЩЁ НЕ ОТОБРАЖЕНА. Во всех снятых срезах у US Open
--- встречались только 1217 и 1218 (квалификация, 129 строк) и 1221 (пара).
--- Писатель квалификацию пропускает, разбор отбрасывает пары — значит при
--- включённом LIVE_CREATE_MATCHES во время US Open не создастся НИЧЕГО, и
--- выглядеть это будет как сломанный писатель. На самом деле id основной сетки
--- появится в live_unmatched с reason='edition_unmapped' на первом же
--- обновлении расписания после публикации сетки; добавьте его сюда строкой.
+-- Квалификация отдельного id НЕ имеет: под 1217 приходят и is_qualifying=true,
+-- и is_qualifying=false (проверено на живой ленте 2026-08-28: 16 строк atp
+-- singles под 1217, из них 6 — основная сетка).
+--
+-- ОТСЮДА ГЛАВНОЕ: «id встречался в ленте» НЕ подтверждает, что это наш турнир.
+-- Оно подтверждает только, что id существует. У нас календарь ATP (одиночки),
+-- поэтому подтверждением служит каталог, отфильтрованный по туру:
+--   GET /tournaments?tour=atp&draw=singles&limit=200
+-- Снимок: db/live_tournaments_catalogue.json (198 строк,
+-- has_more=false, один запрос).
+--
+-- Предыдущая версия этого файла держала 1209 (wta Cincinnati) и 1218 (wta
+-- US Open) как ПОДТВЕРЖДЁННЫЕ — именно потому, что они встречались в ленте.
+-- Ущерба не было только потому, что писатель требует, чтобы разрешились ОБА
+-- игрока, а в players у нас лишь ATP; то есть спасала не проверка, а
+-- случайность. Такие id здесь больше не лежат.
+--
+-- Связь остаётся N:1 (много внешних ключей на один наш розыгрыш) — как только
+-- у розыгрыша найдётся второй легитимный ATP-id, он встанет рядом. Индекс по
+-- (source, entity_type, entity_id) не превращать в unique.
 --
 -- Сид заведомо НЕПОЛОН, и это нормально. Незнакомый id турнира отправляет
 -- фикстуру в live_unmatched с reason='edition_unmapped' — это и есть очередь,
 -- по которой файл пополняется. Догадок здесь нет и быть не должно: неверно
 -- угаданный розыгрыш создаёт матч в чужой сетке.
 
--- confirmed_at заполнен ТОЛЬКО у id, реально наблюдавшихся в ответах по матчам.
--- Остальные взяты из каталога /tournaments: турнир они называют верно, но роль
--- каждого id (основная сетка / квалификация / пара) каталог не сообщает, а
--- угадывать её — ровно то, чего этот файл делать не должен. Такие строки
--- работают, но помечены как ждущие подтверждения.
 insert into external_ids (source, entity_type, external_key, entity_id, confirmed_at)
-select 'livetennisapi', 'edition', v.external_key, te.id,
-       case when v.observed then now() end
+select 'livetennisapi', 'edition', v.external_key, te.id, now()
 from (values
-  -- US Open. 1217 и 1218 наблюдались на квалификации, 1221 — парный разряд;
-  -- парные до писателя матчей не доходят (отсекаются на разборе), а
-  -- квалификация отсекается самим писателем.
-  ('1217', 'us_open_2026', true),
-  ('1218', 'us_open_2026', true),
-  -- 1219 — из каталога, в ответах по матчам не встречался ни разу.
-  ('1219', 'us_open_2026', false),
-  ('1221', 'us_open_2026', true),
-  -- Cincinnati: 1209 из ответов по матчам, 1210/1211 из каталога
-  ('1209', 'cincinnati_2026', true),
-  ('1210', 'cincinnati_2026', false),
-  ('1211', 'cincinnati_2026', false),
-  -- Shanghai. «Shanghai 2» (3700/9189) сюда НЕ входит: это отдельный турнир
-  -- в том же городе, а не второй id того же самого.
-  ('1667', 'shanghai_2026', false),
-  ('8656', 'shanghai_2026', false),
-  -- Rolex Paris Masters
-  ('1725', 'paris_masters_2026', false),
-  ('1726', 'paris_masters_2026', false),
-  -- Nitto ATP Finals (у источника «Finals - Turin»)
-  ('2794', 'atp_finals_2026', false),
-  ('2795', 'atp_finals_2026', false)
-) as v(external_key, edition_slug, observed)
+  -- Все пять — из каталога с tour=atp&draw=singles, то есть подтверждено, что
+  -- это наш турнир, а не одноимённое событие другого тура.
+  ('1217', 'us_open_2026'),       -- в каталоге «US Open», grand_slam
+  ('1210', 'cincinnati_2026'),    -- «Cincinnati», masters_1000
+  ('1667', 'shanghai_2026'),      -- «Shanghai»; «Shanghai 2» (3700) — ДРУГОЙ турнир
+  ('1725', 'paris_masters_2026'), -- «Paris», masters_1000
+  ('2794', 'atp_finals_2026')     -- «Finals - Turin», tour_finals
+) as v(external_key, edition_slug)
 join tournament_editions te on te.slug = v.edition_slug
-on conflict (source, entity_type, external_key) do nothing;
+-- do update, а не do nothing: этот файл и есть источник истины по маппингу,
+-- и повторный прогон должен подтягивать изменения, а не игнорировать их.
+on conflict (source, entity_type, external_key) do update
+  set entity_id = excluded.entity_id, confirmed_at = excluded.confirmed_at;
+
+-- Снятые ранее строки. 1209 и 1218 — женские сетки, 1221 — парная; 1211, 8656,
+-- 1726 и 2795 в ATP-каталоге отсутствуют и, судя по разбивке выше, тоже
+-- принадлежат другому туру или разряду. Отсутствующий id безопаснее неверного:
+-- он приведёт фикстуру в live_unmatched, а неверный — в чужую сетку.
+delete from external_ids
+where source = 'livetennisapi' and entity_type = 'edition'
+  and external_key in ('1209', '1211', '1218', '1219', '1221', '1726', '2795', '8656');
 
 -- Что получилось
-select e.external_key, te.slug, t.name
+select e.external_key, te.slug, t.name, e.confirmed_at is not null as confirmed
 from external_ids e
 join tournament_editions te on te.id = e.entity_id
 join tournaments t on t.id = te.tournament_id

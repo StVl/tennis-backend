@@ -309,3 +309,27 @@ func TestParseBoardOnWrongEndpointIsVisible(t *testing.T) {
 	t.Logf("видно: RowsParsed=%d RowsDoubles=%d RowsUnusable=%d",
 		board.RowsParsed, board.RowsDoubles, board.RowsUnusable)
 }
+
+// Разряды и туры одного события у источника — РАЗНЫЕ id турнира, и на этом
+// стоит db/live_edition_ids.sql: наш календарь — ATP-одиночки, поэтому в сид
+// попадает только мужской id. Если источник когда-нибудь сведёт их в один,
+// сид начнёт подтягивать чужие сетки, и узнать об этом лучше здесь.
+func TestTournamentIDIsPerTourNotPerEvent(t *testing.T) {
+	page, err := ParseFixtures(readFixture(t, "us_open_tour_split.json"))
+	if err != nil {
+		t.Fatalf("ParseFixtures: %v", err)
+	}
+	byKey := map[string]int{}
+	for _, f := range page.Fixtures {
+		byKey[f.TournamentKey]++
+	}
+	// 1217 — atp, 1218 — wta; оба под одним названием «US Open».
+	for _, key := range []string{"1217", "1218"} {
+		if byKey[key] == 0 {
+			t.Errorf("в срезе нет фикстур с tournament_id=%s", key)
+		}
+	}
+	if len(byKey) < 2 {
+		t.Errorf("tournament_id один на все туры (%v) — сид маппинга больше не защищает от чужой сетки", byKey)
+	}
+}
