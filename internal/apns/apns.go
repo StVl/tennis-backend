@@ -40,6 +40,11 @@ var ErrUnregistered = errors.New("apns: device token is no longer registered")
 // а окружение: sandbox-токен ушёл на боевой хост или наоборот.
 var ErrBadDeviceToken = errors.New("apns: bad device token (wrong environment?)")
 
+// ErrProviderToken — 403: Apple не приняла наш JWT. Кэш подписи при этом
+// сброшен, поэтому следующая попытка подпишет заново. Без сброса разошедшиеся
+// часы или заменённый ключ роняли бы каждый пуш весь час жизни токена.
+var ErrProviderToken = errors.New("apns: provider token rejected")
+
 type Config struct {
 	KeyID    string
 	TeamID   string
@@ -120,8 +125,6 @@ type Notification struct {
 	Token   string
 	Type    PushType
 	Payload any
-	// Когда карточку убрать с локскрина; только для PushEnd.
-	DismissAt time.Time
 }
 
 func (c *Client) Send(ctx context.Context, n Notification) error {
@@ -167,11 +170,14 @@ func (c *Client) Send(ctx context.Context, n Notification) error {
 		Reason string `json:"reason"`
 	}
 	_ = json.Unmarshal(respBody, &apnsErr)
-	if apnsErr.Reason == "BadDeviceToken" {
+	switch apnsErr.Reason {
+	case "BadDeviceToken":
 		return ErrBadDeviceToken
-	}
-	if apnsErr.Reason == "Unregistered" {
+	case "Unregistered":
 		return ErrUnregistered
+	case "ExpiredProviderToken", "InvalidProviderToken", "MissingProviderToken":
+		c.invalidateAuthToken()
+		return ErrProviderToken
 	}
 	return fmt.Errorf("apns: status %d, reason %q", resp.StatusCode, apnsErr.Reason)
 }
@@ -207,6 +213,12 @@ func (c *Client) authToken() (string, error) {
 	c.token = signing + "." + base64.RawURLEncoding.EncodeToString(sig)
 	c.tokenAt = now
 	return c.token, nil
+}
+
+func (c *Client) invalidateAuthToken() {
+	c.mu.Lock()
+	c.token = ""
+	c.mu.Unlock()
 }
 
 func b64(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }

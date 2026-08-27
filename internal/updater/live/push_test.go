@@ -2,6 +2,7 @@ package live
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -35,7 +36,9 @@ func (f *fakeSender) byType(t apns.PushType) []apns.Notification {
 func pushCfg() config.PushConfig {
 	return config.PushConfig{
 		Enabled: true, BatchSize: 50, MaxAttempts: 5,
-		DismissAfter: 30 * time.Second, MaxSessionAge: 6 * time.Hour,
+		AttributesType: "MatchActivityAttributes",
+		RetryAfter:     0,
+		DismissAfter:   30 * time.Second, MaxSessionAge: 6 * time.Hour,
 	}
 }
 
@@ -183,7 +186,7 @@ func TestPushEndSendsWithUpdateToken(t *testing.T) {
 		t.Errorf("end ушёл на %q: гасить надо токеном активности, а не push-to-start",
 			ends[0].Token)
 	}
-	if ends[0].DismissAt.IsZero() {
+	if apsField(t, ends[0], "dismissal-date") == nil {
 		t.Error("dismissal-date не задан — карточка не уберётся с локскрина сама")
 	}
 }
@@ -230,7 +233,7 @@ func TestPushSweepsStaleSessions(t *testing.T) {
 	userID := pushEnv(t, pool, fm.id)
 	ctx := context.Background()
 
-	if err := storage.OpenSession(ctx, pool, userID, fm.id,
+	if _, err := storage.OpenSession(ctx, pool, userID, fm.id,
 		time.Now().UTC().Add(-8*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +263,7 @@ func TestPushSweepRunsWhenDisabled(t *testing.T) {
 	userID := pushEnv(t, pool, fm.id)
 	ctx := context.Background()
 
-	if err := storage.OpenSession(ctx, pool, userID, fm.id,
+	if _, err := storage.OpenSession(ctx, pool, userID, fm.id,
 		time.Now().UTC().Add(-8*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -310,4 +313,130 @@ func TestPushGivesUpAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("попыток %d при потолке %d: событие разбирается вечно",
 			attempts, cfg.MaxAttempts)
 	}
+}
+
+func apsField(t *testing.T, n apns.Notification, key string) any {
+	t.Helper()
+	payload, ok := n.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload не map: %T", n.Payload)
+	}
+	aps, ok := payload["aps"].(map[string]any)
+	if !ok {
+		t.Fatalf("в payload нет aps: %v", payload)
+	}
+	return aps[key]
+}
+
+// Отказ Apple, который может пройти со второй попытки, НЕ должен считаться
+// доставкой: иначе перебой молча лишает пользователя карточки, а очередь
+// говорит, что всё отправлено. И слот сессии должен освободиться, иначе
+// повторная попытка пропустит этого пользователя как «уже с карточкой».
+func TestPushRetriesWhenSendFails(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	pushEnv(t, pool, fm.id)
+	ctx := context.Background()
+	emitEvent(t, pool, fm.id, storage.LiveEventLive)
+
+	sender := &fakeSender{err: errors.New("apns: status 503")}
+	u := NewPush(pool, sender, pushCfg())
+	if err := u.Update(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		consumed bool
+		attempts int
+		lastErr  *string
+	)
+	if err := pool.QueryRow(ctx, `
+		select consumed_at is not null, attempts, last_error
+		from live_events where match_id = $1`, fm.id).
+		Scan(&consumed, &attempts, &lastErr); err != nil {
+		t.Fatal(err)
+	}
+	if consumed {
+		t.Fatal("событие помечено разобранным, хотя пуш не ушёл: повторить его больше нечем")
+	}
+	if attempts != 1 {
+		t.Errorf("попыток %d, ожидалась 1", attempts)
+	}
+	if lastErr == nil {
+		t.Error("last_error пуст: по чему тогда разбирать, почему не доставили")
+	}
+	if n := openSessions(t, pool, fm.id); n != 0 {
+		t.Fatalf("открытых сессий %d: слот занят под пуш, которого не было", n)
+	}
+
+	// Apple вернулась в строй — повтор должен доставить.
+	sender.err = nil
+	if err := u.Update(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`select consumed_at is not null from live_events where match_id = $1`, fm.id).
+		Scan(&consumed); err != nil {
+		t.Fatal(err)
+	}
+	if !consumed {
+		t.Error("повтор прошёл, а событие всё ещё не разобрано")
+	}
+	if got := len(sender.byType(apns.PushStart)); got != 2 {
+		t.Errorf("start-пушей %d, ожидалось 2 (неудачный и удачный)", got)
+	}
+	if n := openSessions(t, pool, fm.id); n != 1 {
+		t.Errorf("открытых сессий %d, ожидалась 1", n)
+	}
+}
+
+// Без личности матча в attributes iOS нечем создать активность, а клиенту
+// нечем ответить на PUT /v1/users/me/live-activities/{match_id}.
+func TestStartPayloadCarriesMatchIdentity(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	pushEnv(t, pool, fm.id)
+	ctx := context.Background()
+	emitEvent(t, pool, fm.id, storage.LiveEventLive)
+
+	sender := &fakeSender{}
+	if err := NewPush(pool, sender, pushCfg()).Update(ctx); err != nil {
+		t.Fatal(err)
+	}
+	starts := sender.byType(apns.PushStart)
+	if len(starts) != 1 {
+		t.Fatalf("start-пушей %d, ожидался 1", len(starts))
+	}
+	attrs, ok := apsField(t, starts[0], "attributes").(map[string]any)
+	if !ok {
+		t.Fatalf("attributes не объект: %#v", apsField(t, starts[0], "attributes"))
+	}
+	if attrs["match_id"] != fm.id {
+		t.Errorf("match_id = %v, ожидался %d", attrs["match_id"], fm.id)
+	}
+	players, ok := attrs["players"].([]storage.CardPlayer)
+	if !ok || len(players) != 2 {
+		t.Fatalf("players = %#v, ожидались двое", attrs["players"])
+	}
+	for _, p := range players {
+		if p.Slug == "" || p.Name == "" {
+			t.Errorf("игрок без имени или слага: %#v", p)
+		}
+	}
+	if apsField(t, starts[0], "attributes-type") != "MatchActivityAttributes" {
+		t.Error("attributes-type пуст: iOS не поймёт, во что декодировать attributes")
+	}
+}
+
+func openSessions(t *testing.T, pool *pgxpool.Pool, matchID int64) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		select count(*) from live_activity_sessions
+		where match_id = $1 and ended_at is null`, matchID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

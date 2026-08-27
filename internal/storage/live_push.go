@@ -2,6 +2,9 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -43,20 +46,24 @@ type LiveEvent struct {
 //
 // for update skip locked, а не обычный select: два инстанса пушера иначе
 // разберут одно событие оба, и пользователь получит две карточки.
+// retryAfter задаёт паузу между попытками: без неё пушер с крона раз в минуту
+// сжигает весь лимит попыток за минуты, и перебой у Apple длиннее этого
+// исчерпывает событие насовсем.
 func ClaimLiveEvents(ctx context.Context, pool *pgxpool.Pool, limit, maxAttempts int,
-	at time.Time) ([]LiveEvent, error) {
+	at time.Time, retryAfter time.Duration) ([]LiveEvent, error) {
 
 	rows, err := pool.Query(ctx, `
 		update live_events set claimed_at = $3, attempts = attempts + 1
 		where id in (
 			select id from live_events
 			where consumed_at is null and attempts < $2
+			  and (claimed_at is null or claimed_at < $4)
 			order by id
 			limit $1
 			for update skip locked
 		)
 		returning id, match_id, event, attempts`,
-		limit, maxAttempts, at)
+		limit, maxAttempts, at, at.Add(-retryAfter))
 	if err != nil {
 		return nil, err
 	}
@@ -73,9 +80,12 @@ func ConsumeLiveEvent(ctx context.Context, pool *pgxpool.Pool, id int64, at time
 	return err
 }
 
+// FailLiveEvent помечает попытку неудачной. claimed_at НЕ сбрасывается: он же
+// служит отметкой «когда пробовали в последний раз», по которой ClaimLiveEvents
+// выдерживает паузу. Со сбросом пауза не действовала бы вовсе.
 func FailLiveEvent(ctx context.Context, pool *pgxpool.Pool, id int64, reason string) error {
 	_, err := pool.Exec(ctx,
-		`update live_events set claimed_at = null, last_error = $2 where id = $1`, id, reason)
+		`update live_events set last_error = $2 where id = $1`, id, reason)
 	return err
 }
 
@@ -115,14 +125,33 @@ func StartAudience(ctx context.Context, pool *pgxpool.Pool, matchID int64) ([]Pu
 	})
 }
 
+// OpenSession занимает слот карточки и возвращает id строки; 0 означает, что
+// открытая сессия уже была.
+//
+// Слот занимается ДО отправки пуша. Уникальный индекс по (user_id, match_id)
+// при ended_at is null — единственное, что не даёт отправить второй старт на
+// тот же матч, а если сначала отправлять, то падение между отправкой и
+// вставкой оставит карточку без сессии: гасить её потом будет нечем.
 func OpenSession(ctx context.Context, pool *pgxpool.Pool, userID string, matchID int64,
-	at time.Time) error {
+	at time.Time) (int64, error) {
 
-	_, err := pool.Exec(ctx, `
+	var id int64
+	err := pool.QueryRow(ctx, `
 		insert into live_activity_sessions (user_id, match_id, phase, started_at)
 		values ($1, $2, 'starting', $3)
-		on conflict do nothing`,
-		userID, matchID, at)
+		on conflict do nothing
+		returning id`,
+		userID, matchID, at).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
+}
+
+// DeleteSession снимает слот под пуш, который отправить не удалось: иначе
+// повторная попытка пропустит этого пользователя как «уже с карточкой».
+func DeleteSession(ctx context.Context, pool *pgxpool.Pool, id int64) error {
+	_, err := pool.Exec(ctx, `delete from live_activity_sessions where id = $1`, id)
 	return err
 }
 
@@ -207,4 +236,51 @@ func PushTokensForUser(ctx context.Context, pool *pgxpool.Pool, userID string) (
 		err := row.Scan(&p.UserID, &p.Token, &p.Env)
 		return p, err
 	})
+}
+
+// PushCard — то, чей это матч и где. Всё, что нужно клиенту, чтобы построить
+// карточку, и ничего сверх: ни счёта, ни сетов, ни победителя. Правило 1 из
+// docs/live-status-ingest.md действует и в payload'е пуша — это последний шаг,
+// на котором его проще всего нарушить.
+type PushCard struct {
+	MatchID        int64        `json:"match_id"`
+	Edition        string       `json:"edition"`
+	TournamentName string       `json:"tournament_name"`
+	Round          string       `json:"round"`
+	Players        []CardPlayer `json:"players"`
+}
+
+type CardPlayer struct {
+	Side int    `json:"side"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+func PushCardFor(ctx context.Context, pool *pgxpool.Pool, matchID int64) (PushCard, error) {
+	var (
+		card        PushCard
+		playersJSON string
+	)
+	err := pool.QueryRow(ctx, `
+		select m.id, te.slug, t.name, m.round_code,
+		       coalesce((
+		         select json_agg(json_build_object(
+		                  'side', mp.side, 'slug', p.slug, 'name', p.display_name)
+		                order by mp.side, mp.slot)
+		         from match_participants mp
+		         join players p on p.id = mp.player_id
+		         where mp.match_id = m.id), '[]')::text
+		from matches m
+		join tournament_editions te on te.id = m.edition_id
+		join tournaments t on t.id = te.tournament_id
+		where m.id = $1`,
+		matchID).Scan(&card.MatchID, &card.Edition, &card.TournamentName,
+		&card.Round, &playersJSON)
+	if err != nil {
+		return card, err
+	}
+	if err := json.Unmarshal([]byte(playersJSON), &card.Players); err != nil {
+		return card, fmt.Errorf("unmarshal card players: %w", err)
+	}
+	return card, nil
 }

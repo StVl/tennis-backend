@@ -75,9 +75,15 @@ type PushConfig struct {
 	KeyPath string
 	// Хост Apple. Токен sandbox на боевом хосте даёт BadDeviceToken, причём
 	// сообщение об этом ни на что не указывает.
-	Host          string
-	BatchSize     int
-	MaxAttempts   int
+	Host string
+	// Имя Swift-типа ActivityAttributes: iOS создаёт активность из push-to-start
+	// по нему, и знает его только клиент.
+	AttributesType string
+	BatchSize      int
+	MaxAttempts    int
+	// Пауза перед повторной попыткой. Без неё крон раз в минуту сжигает
+	// MaxAttempts за минуты, и перебой у Apple длиннее этого теряет событие.
+	RetryAfter    time.Duration
 	DismissAfter  time.Duration
 	MaxSessionAge time.Duration
 	UpdateTimeout time.Duration
@@ -85,18 +91,20 @@ type PushConfig struct {
 
 func loadPush() (PushConfig, error) {
 	c := PushConfig{
-		Enabled:       envBool("PUSH_ENABLED", false),
-		Cron:          envOrDefault("PUSH_CRON", "* * * * *"),
-		KeyID:         os.Getenv("APNS_KEY_ID"),
-		TeamID:        os.Getenv("APNS_TEAM_ID"),
-		BundleID:      os.Getenv("APNS_BUNDLE_ID"),
-		KeyPath:       os.Getenv("APNS_KEY_PATH"),
-		Host:          envOrDefault("APNS_HOST", "https://api.sandbox.push.apple.com"),
-		BatchSize:     envInt("PUSH_BATCH_SIZE", 50),
-		MaxAttempts:   envInt("PUSH_MAX_ATTEMPTS", 5),
-		DismissAfter:  envDuration("PUSH_DISMISS_AFTER", 30*time.Second),
-		MaxSessionAge: envDuration("PUSH_MAX_SESSION_AGE", 6*time.Hour),
-		UpdateTimeout: envDuration("PUSH_UPDATE_TIMEOUT", 45*time.Second),
+		Enabled:        envBool("PUSH_ENABLED", false),
+		Cron:           envOrDefault("PUSH_CRON", "* * * * *"),
+		KeyID:          os.Getenv("APNS_KEY_ID"),
+		TeamID:         os.Getenv("APNS_TEAM_ID"),
+		BundleID:       os.Getenv("APNS_BUNDLE_ID"),
+		KeyPath:        os.Getenv("APNS_KEY_PATH"),
+		Host:           envOrDefault("APNS_HOST", "https://api.sandbox.push.apple.com"),
+		AttributesType: envOrDefault("APNS_ATTRIBUTES_TYPE", "MatchActivityAttributes"),
+		BatchSize:      envInt("PUSH_BATCH_SIZE", 50),
+		MaxAttempts:    envInt("PUSH_MAX_ATTEMPTS", 5),
+		RetryAfter:     envDuration("PUSH_RETRY_AFTER", 2*time.Minute),
+		DismissAfter:   envDuration("PUSH_DISMISS_AFTER", 30*time.Second),
+		MaxSessionAge:  envDuration("PUSH_MAX_SESSION_AGE", 6*time.Hour),
+		UpdateTimeout:  envDuration("PUSH_UPDATE_TIMEOUT", 45*time.Second),
 	}
 	if !c.Enabled {
 		return c, nil

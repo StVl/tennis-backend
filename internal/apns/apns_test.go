@@ -191,3 +191,26 @@ func TestNewRejectsBadKey(t *testing.T) {
 		})
 	}
 }
+
+// 403 означает, что Apple не приняла подпись. Кэш обязан сброситься: иначе
+// разошедшиеся часы или заменённый ключ роняют каждый пуш весь час жизни
+// токена, и починить это можно только перезапуском.
+func TestSendInvalidatesTokenOn403(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"reason":"ExpiredProviderToken"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := testClient(t, srv)
+	err := c.Send(context.Background(), Notification{
+		Token: "devicetoken1", Type: PushStart, Payload: map[string]any{"aps": map[string]any{}},
+	})
+	if !errors.Is(err, ErrProviderToken) {
+		t.Fatalf("ошибка %v, ожидалась ErrProviderToken", err)
+	}
+	if c.token != "" {
+		t.Error("кэш подписи не сброшен: следующая попытка уйдёт с тем же отвергнутым JWT")
+	}
+}

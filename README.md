@@ -70,6 +70,9 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 | `PUSH_MAX_ATTEMPTS` | `5` | после этого событие бросаем: иначе всегда падающее разбирается вечно |
 | `PUSH_DISMISS_AFTER` | `30s` | `dismissal-date` в end-пуше |
 | `PUSH_MAX_SESSION_AGE` | `6h` | аварийное закрытие сессии |
+| `PUSH_RETRY_AFTER` | `2m` | пауза перед повтором. Без неё крон раз в минуту сжигает `PUSH_MAX_ATTEMPTS` за минуты, и перебой у Apple длиннее этого теряет событие |
+| `PUSH_UPDATE_TIMEOUT` | `45s` | таймаут одного прогона пушера |
+| `APNS_ATTRIBUTES_TYPE` | `MatchActivityAttributes` | имя Swift-типа `ActivityAttributes`; знает его только клиент |
 
 - **`PUT /v1/users/me/push-token`** — `{"token": "...", "env": "sandbox\|production"}`. `env` обязателен и не угадывается;
 - **`PUT /v1/users/me/live-activities/{match_id}`** — `{"token": "..."}`, токен уже запущенной активности. Пока он не пришёл, гасить карточку пушем нечем;
@@ -78,6 +81,26 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - сессия закрывается всегда, даже если отправить нечем или отправка не удалась: открытая сессия навсегда блокирует новый старт по этому матчу;
 - уборка просроченных сессий работает **при выключенном рубильнике**: его дёргают во время инцидента, и именно тогда карточки нельзя оставить висеть;
 - `suspended` / `resumed` пока помечаются разобранными без действия — продуктового решения о поведении карточки нет.
+
+**Payload старта.** iOS создаёт активность из `attributes`, поэтому в них лежит личность матча — без неё карточку нечем нарисовать, а клиенту нечем ответить на `PUT /v1/users/me/live-activities/{match_id}`. Счёта здесь нет и не будет (правило 1):
+
+```json
+{"aps": {
+  "timestamp": 1756300000, "event": "start",
+  "attributes-type": "MatchActivityAttributes",
+  "attributes": {
+    "match_id": 482, "edition": "us_open_2026",
+    "tournament_name": "US Open", "round": "R128",
+    "players": [{"side": 1, "slug": "sinner", "name": "Jannik Sinner"},
+                {"side": 2, "slug": "alcaraz", "name": "Carlos Alcaraz"}]
+  },
+  "content-state": {"phase": "on_court"}
+}}
+```
+
+`attributes-type` должен совпадать с именем Swift-типа на клиенте — оно задаётся `APNS_ATTRIBUTES_TYPE`, а не зашито в код. End-пуш несёт `event: "end"`, `dismissal-date` и `content-state: {"phase": "ended"}` — результата в нём нет.
+
+**Доставка не теряется молча.** Отказ, который может пройти со второй попытки (429, 5xx, отвергнутый JWT), не помечает событие разобранным: оно вернётся через `PUSH_RETRY_AFTER` и так до `PUSH_MAX_ATTEMPTS`. Слот сессии занимается ДО отправки и освобождается при неудаче, поэтому повтор не задваивает карточку и не пропускает пользователя как «уже с карточкой».
 
 Создание матчей (`LIVE_CREATE_MATCHES=true`) — единственное место, где сервис **добавляет** строки в `matches`, а не меняет один столбец. Оно существует потому, что флипать иначе нечего: в базе нет ни одной строки со статусом `scheduled`. Каждая проверка отделяет «можно создать» от «пришлось бы угадать»:
 

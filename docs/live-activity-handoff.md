@@ -1,4 +1,4 @@
-# Handoff — Live Activity, Task 1 done and Task 2 open
+# Handoff — Live Activity, Tasks 1 and 2
 
 **For:** whoever picks up the push side, and the iOS side who owns two of the decisions below.
 **Written by:** the backend, after implementing Task 1 of `docs/live-status-ingest.md`.
@@ -9,7 +9,7 @@ says what exists, what does not, and what will bite you.
 
 ## Read this first
 
-**Task 1 is complete and Task 2 is untouched.** The ingester decides `matches.status` and writes a
+**Task 1 and Task 2 are both complete** (see the Revised block under *What is left*). The ingester decides `matches.status` and writes a
 row to the `live_events` outbox on every transition. **Nothing reads that outbox.** There is no APNs
 code, no device token, no session table. A card has never been sent.
 
@@ -69,6 +69,29 @@ up?".
 ---
 
 ## What is left — Task 2
+
+> **Revised 2026-08-27 — Task 2 is implemented.** Everything this section asks for now exists:
+> `internal/apns` (ES256 JWT with 50-minute rotation, `liveactivity` topic, 410 and 403 handling),
+> `internal/updater/live/push.go` (the only consumer of the `live_events` outbox),
+> `internal/storage/live_push.go`, `db/live_push.sql`, and two endpoints — `PUT /v1/users/me/push-token`
+> and `PUT /v1/users/me/live-activities/{match_id}`. The env table and the payload contract are in
+> `README.md`. Read the list below as the specification it was written as, not as open work.
+>
+> Three things are worth carrying forward rather than rediscovering:
+>
+> **The session slot is claimed before the push is sent**, and released if the send fails. The partial
+> unique index on `(user_id, match_id) where ended_at is null` is the only thing preventing a second
+> start push for the same match, so sending first would let a crash in between leave a card with no
+> session — and therefore no end push, ever.
+>
+> **A retryable failure does not consume the event.** 429, 5xx and a rejected JWT return the event to
+> the queue for `PUSH_RETRY_AFTER`, up to `PUSH_MAX_ATTEMPTS`. This is the whole reason the design
+> chose an outbox over `pg_notify`, and it is easy to lose at the last step by swallowing per-user
+> errors.
+>
+> **`attributes-type` is configuration, not a constant.** Only the client knows the name of its Swift
+> `ActivityAttributes` type; it comes from `APNS_ATTRIBUTES_TYPE`. If the client renames the type and
+> nobody updates the variable, every push-to-start is silently undecodable on the device.
 
 The handoff's own list, unchanged, plus one thing it omits.
 
