@@ -17,6 +17,8 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 
 Схему и контент этот сервис не создаёт: их владелец — [tennis-data-storage](https://github.com/StVl/tennis-data-storage). Как поднять базу с нуля и почему порядок шагов важен — [`docs/database.md`](docs/database.md).
 
+Что должна сделать iOS-сторона, чтобы карточка Live Activity заработала — [`docs/ios-integration.md`](docs/ios-integration.md).
+
 | Переменная | Default | Что делает |
 |---|---|---|
 | `DATABASE_URL` | — (обязательна) | строка подключения к Postgres |
