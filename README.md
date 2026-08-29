@@ -15,6 +15,8 @@ Go-бэкенд для [tennis-tracker](https://github.com/StVl/tennis-tracker) 
 DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 ```
 
+Схему и контент этот сервис не создаёт: их владелец — [tennis-data-storage](https://github.com/StVl/tennis-data-storage). Как поднять базу с нуля и почему порядок шагов важен — [`docs/database.md`](docs/database.md).
+
 | Переменная | Default | Что делает |
 |---|---|---|
 | `DATABASE_URL` | — (обязательна) | строка подключения к Postgres |

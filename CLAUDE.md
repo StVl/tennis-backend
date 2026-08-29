@@ -19,7 +19,11 @@ RUN_ONCE=live-schedule ... go run ./cmd/server    # run one cron job and exit
 
 `gofmt -l .` currently reports drift in `internal/storage/tournaments.go` (misaligned `var`/struct blocks). Format files you touch; don't reformat the rest as drive-by noise.
 
-Smoke-testing endpoints requires a live Postgres. There are still no migrations here — the canonical schema lives in [tennis-data-storage](https://github.com/StVl/tennis-data-storage) (`db/schema.sql`, `docs/db_schema.md`, `docs/api_design.md`) — but `db/` now holds the live-ingest DDL that has to be carried over there (`live_ingest.sql`, `live_external_ids.sql`) plus `dev_fixtures.sql` for local work. Apply them with `docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/<file>.sql`. A local Postgres runs in Docker as `tennis-pg` on port **55432** (`postgresql://tennis:tennis@localhost:55432/tennis`); there is no `psql` on the host. The iOS client is [tennis-tracker](https://github.com/StVl/tennis-tracker).
+Smoke-testing endpoints requires a live Postgres. There are no migrations here — the canonical schema lives in [tennis-data-storage](https://github.com/StVl/tennis-data-storage) (`db/schema.sql`, `docs/db_schema.md`, `docs/api_design.md`), which also owns all content data. **See [`docs/database.md`](docs/database.md) for who owns what and how to build the database; read it before touching `db/`.**
+
+Building one takes three steps and the order matters: `db/schema.sql` (there) → `scripts/migrate_data.py` (there) → `db/live_external_ids.sql` and `db/live_edition_ids.sql` (here). The mapping seeds must come last because they join on `players.slug` / `tournament_editions.slug`, so on an empty database they match zero rows and succeed silently. Skipping them is detected: Job A logs `no tracked players are mapped to the source`.
+
+`db/` here holds the live-ingest DDL — the schema half went over in [tennis-data-storage#1](https://github.com/StVl/tennis-data-storage/pull/1); the mapping *rows* stay here, maintained from the `live_unmatched` queue — plus `dev_fixtures.sql` for local work (never carried over). Apply any of them with `docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/<file>.sql`. A local Postgres runs in Docker as `tennis-pg` on port **55432** (`postgresql://tennis:tennis@localhost:55432/tennis`); there is no `psql` on the host. The iOS client is [tennis-tracker](https://github.com/StVl/tennis-tracker).
 
 ## Architecture
 
