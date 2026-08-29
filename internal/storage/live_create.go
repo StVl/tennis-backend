@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,8 @@ const (
 	CreateExists
 	// round_code источника отсутствует в нашей таблице rounds.
 	CreateUnknownRound
+	// Наша же строка уже была, и мы поправили ей время начала.
+	CreateRescheduled
 )
 
 // MatchDraft — то, из чего создаётся строка матча. Все id уже разрешены:
@@ -88,17 +91,41 @@ func CreateMatchFromFixture(ctx context.Context, pool *pgxpool.Pool,
 		return 0, CreateUnknownRound, nil
 	}
 
-	var existing int64
+	var (
+		existing     int64
+		existingKey  *string
+		existingStat string
+		existingAt   *time.Time
+	)
 	err = tx.QueryRow(ctx, `
-		select m.id from matches m
+		select m.id, m.import_key, m.status::text, m.scheduled_at from matches m
 		where m.edition_id = $1
 		  and exists (select 1 from match_participants mp
 		              where mp.match_id = m.id and mp.player_id = $2)
 		  and exists (select 1 from match_participants mp
 		              where mp.match_id = m.id and mp.player_id = $3)
 		limit 1`,
-		d.EditionID, d.PlayerIDs[0], d.PlayerIDs[1]).Scan(&existing)
+		d.EditionID, d.PlayerIDs[0], d.PlayerIDs[1]).
+		Scan(&existing, &existingKey, &existingStat, &existingAt)
 	if err == nil {
+		// Время начала — единственное, что мы правим у уже существующей строки,
+		// и только если строка НАША. Источник переносит фикстуры на часы и на
+		// сутки (в снятых прогонах матч уехал с 30.08 15:00Z на 31.08 15:00Z),
+		// а писатель insert-only, поэтому иначе у созданного матча навсегда
+		// остаётся время из первого снимка: на главной и в виджете он покажется
+		// не тогда, когда играется. Строку пайплайна не трогаем никогда — он
+		// сам её и поправит.
+		ours := existingKey != nil && strings.HasPrefix(*existingKey, ImportKeyPrefix)
+		moved := existingAt == nil || !existingAt.Equal(d.ScheduledAt)
+		if ours && moved && existingStat == "scheduled" {
+			if _, err := tx.Exec(ctx, `
+				update matches set scheduled_at = $2
+				where id = $1 and status = 'scheduled' and import_key like $3`,
+				existing, d.ScheduledAt, ImportKeyPrefix+"%"); err != nil {
+				return existing, CreateDone, err
+			}
+			return existing, CreateRescheduled, tx.Commit(ctx)
+		}
 		return existing, CreateExists, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -110,7 +137,8 @@ func CreateMatchFromFixture(ctx context.Context, pool *pgxpool.Pool,
 		insert into matches (edition_id, round_code, scheduled_at, status,
 		                     discipline, import_key, metadata)
 		values ($1, $2, $3, 'scheduled', 'singles', $4, $5::jsonb)
-		on conflict (import_key) do update set import_key = excluded.import_key
+		on conflict (import_key) do update set
+			import_key = excluded.import_key, scheduled_at = excluded.scheduled_at
 		returning id`,
 		d.EditionID, d.RoundCode, d.ScheduledAt, ImportKeyPrefix+d.ExternalKey,
 		fmt.Sprintf(`{"source":"livetennisapi","external_key":%q,"created_by":"live-schedule"}`,

@@ -291,3 +291,99 @@ func TestCreatedMatchEndsTerminal(t *testing.T) {
 		_, _, _ = FlipOut(ctx, pool, pipelineID, LiveEventFinished, "test", now)
 	}
 }
+
+// Источник переносит фикстуры на часы и на сутки. Писатель insert-only, поэтому
+// без отдельной правки времени у созданного матча навсегда осталось бы время из
+// первого снимка — и на главной он показывался бы не тогда, когда играется.
+func TestCreateMatchUpdatesScheduledAtOnReschedule(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	editionID, p1, p2 := createFixtureEnv(t)
+	cleanupCreated(t)
+
+	first := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	draft := MatchDraft{
+		EditionID: editionID, RoundCode: "R128", ScheduledAt: first,
+		PlayerIDs: [2]int64{p1, p2}, ExternalKey: "test-900050",
+	}
+	id, outcome, err := CreateMatchFromFixture(ctx, pool, draft)
+	if err != nil || outcome != CreateDone {
+		t.Fatalf("создание: outcome=%v err=%v", outcome, err)
+	}
+
+	// тот же матч, время уехало на сутки
+	moved := first.Add(24 * time.Hour)
+	draft.ScheduledAt = moved
+	sameID, outcome, err := CreateMatchFromFixture(ctx, pool, draft)
+	if err != nil {
+		t.Fatalf("перенос: %v", err)
+	}
+	if sameID != id {
+		t.Fatalf("создалась вторая строка (%d вместо %d): дедуп по паре игроков не сработал", sameID, id)
+	}
+	if outcome != CreateRescheduled {
+		t.Fatalf("outcome %v, ожидалось CreateRescheduled", outcome)
+	}
+	var got time.Time
+	if err := pool.QueryRow(ctx, `select scheduled_at from matches where id = $1`, id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.UTC().Equal(moved) {
+		t.Errorf("scheduled_at = %s, ожидалось %s: время осталось из первого снимка", got.UTC(), moved)
+	}
+
+	// повтор без изменений — не перенос
+	if _, outcome, err = CreateMatchFromFixture(ctx, pool, draft); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != CreateExists {
+		t.Errorf("outcome %v, ожидалось CreateExists: время не менялось", outcome)
+	}
+}
+
+// Строку пайплайна не трогаем даже по времени: он сам её и поправит.
+func TestCreateMatchLeavesPipelineRowAlone(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	editionID, p1, p2 := createFixtureEnv(t)
+	cleanupCreated(t)
+
+	pipelineAt := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
+	var pipelineID int64
+	if err := pool.QueryRow(ctx, `
+		insert into matches (edition_id, round_code, scheduled_at, status, discipline, import_key)
+		values ($1, 'R128', $2, 'scheduled', 'singles', 'pipeline_test_900051')
+		returning id`, editionID, pipelineAt).Scan(&pipelineID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `delete from matches where id = $1`, pipelineID)
+	})
+	for side, pid := range []int64{p1, p2} {
+		if _, err := pool.Exec(ctx, `
+			insert into match_participants (match_id, side, slot, player_id) values ($1, $2, 1, $3)`,
+			pipelineID, side+1, pid); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	draft := MatchDraft{
+		EditionID: editionID, RoundCode: "R128",
+		ScheduledAt: pipelineAt.Add(-6 * time.Hour),
+		PlayerIDs:   [2]int64{p1, p2}, ExternalKey: "test-900051",
+	}
+	id, outcome, err := CreateMatchFromFixture(ctx, pool, draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != pipelineID || outcome != CreateExists {
+		t.Fatalf("id=%d outcome=%v: ожидалось, что найдём строку пайплайна и ничего не сделаем", id, outcome)
+	}
+	var got time.Time
+	if err := pool.QueryRow(ctx, `select scheduled_at from matches where id = $1`, pipelineID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.UTC().Equal(pipelineAt) {
+		t.Errorf("время строки пайплайна изменилось на %s: этот сервис её не владелец", got.UTC())
+	}
+}

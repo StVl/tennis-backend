@@ -105,7 +105,8 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 	}
 
 	rows := make([]storage.ScheduleRow, 0, len(page.Fixtures))
-	foreign := 0
+	seen := make(map[string]int, len(page.Fixtures))
+	foreign, duplicates := 0, 0
 	for _, f := range page.Fixtures {
 		if _, ok := tracked[f.PlayerKeys[0]]; !ok {
 			if _, ok := tracked[f.PlayerKeys[1]]; !ok {
@@ -113,14 +114,17 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 				continue
 			}
 		}
-		rows = append(rows, storage.ScheduleRow{
-			ExternalKey:   f.ExternalKey,
-			TournamentKey: f.TournamentKey,
-			RoundCode:     f.RoundCode,
-			Tournament:    f.Tournament,
-			ScheduledAt:   f.ScheduledAt,
-			PlayerKeys:    f.PlayerKeys[:],
-		})
+		// Источник возвращает матч в КАЖДОМ батче player=, где есть хоть один
+		// его игрок, поэтому матч двух отслеживаемых приходит дважды. Дедуп
+		// здесь: без него счётчики врут (в снятом прогоне 69 строк на 59
+		// фикстур), а батч делает лишние операции.
+		if i, ok := seen[f.ExternalKey]; ok {
+			rows[i] = row(f)
+			duplicates++
+			continue
+		}
+		seen[f.ExternalKey] = len(rows)
+		rows = append(rows, row(f))
 	}
 	if foreign > 0 {
 		slog.Warn("live-schedule: fixtures without a tracked player were dropped; "+
@@ -204,7 +208,7 @@ func (u *ScheduleUpdater) Update(ctx context.Context) error {
 
 	slog.Info("live-schedule: updated",
 		"players", len(keys), "rows_parsed", page.RowsParsed,
-		"upserted", upserted, "pruned", pruned, "foreign", foreign,
+		"stored", upserted, "duplicates", duplicates, "pruned", pruned, "foreign", foreign,
 		"doubles", page.RowsDoubles, "cancelled", page.RowsCancelled,
 		"unusable", page.RowsUnusable,
 		// Фикстура без времени окна наблюдения не открывает — это видно здесь,
@@ -288,7 +292,7 @@ func (u *ScheduleUpdater) createMatches(ctx context.Context,
 		return fmt.Errorf("resolve players: %w", err)
 	}
 
-	var created, exists, unknownRound, skipped int
+	var created, exists, rescheduled, unknownRound, skipped int
 	for _, f := range fixtures {
 		// Квалификация: наши розыгрыши — основные сетки, и строки квалификации
 		// в них попадать не должны. В снятом срезе это 84 строки из 200, то
@@ -341,6 +345,8 @@ func (u *ScheduleUpdater) createMatches(ctx context.Context,
 			created++
 		case storage.CreateExists:
 			exists++
+		case storage.CreateRescheduled:
+			rescheduled++
 		case storage.CreateUnknownRound:
 			unknownRound++
 			_ = storage.RecordUnmatched(ctx, u.pool, livesource.SourceName,
@@ -353,7 +359,7 @@ func (u *ScheduleUpdater) createMatches(ctx context.Context,
 	}
 
 	slog.Info("live-schedule: matches from fixtures",
-		"created", created, "already_existed", exists,
+		"created", created, "already_existed", exists, "rescheduled", rescheduled,
 		"unknown_round", unknownRound, "skipped", skipped)
 	return nil
 }
@@ -379,3 +385,14 @@ const staleAfter = 12 * time.Hour
 
 // runRetention — сколько держим журнал прогонов.
 const runRetention = 14 * 24 * time.Hour
+
+func row(f livesource.Fixture) storage.ScheduleRow {
+	return storage.ScheduleRow{
+		ExternalKey:   f.ExternalKey,
+		TournamentKey: f.TournamentKey,
+		RoundCode:     f.RoundCode,
+		Tournament:    f.Tournament,
+		ScheduledAt:   f.ScheduledAt,
+		PlayerKeys:    f.PlayerKeys[:],
+	}
+}
