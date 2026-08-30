@@ -1,15 +1,16 @@
 # What the iOS side has to do
 
 The backend half of the Live Activity is finished: it detects when a followed player walks on court,
-flips `matches.status`, and pushes to APNs. Nothing reaches a lock screen until the seven steps below
-are done, and four of them are things only the client can supply.
+flips `matches.status`, and pushes to APNs. It flips the `scheduled` match rows the content pipeline
+already publishes — no new rows, no writes outside that one column. Nothing reaches a lock screen
+until the seven steps below are done, and four of them are things only the client can supply.
 
 Counterpart to [`live-activity-handoff.md`](live-activity-handoff.md), which is the same conversation
 in the other direction.
 
 | # | Step | Blocks | Backend side |
 |---|---|---|---|
-| 0 | Decide whether we may create match rows from the vendor's fixtures | **everything** | built, shipped off |
+| 0 | Confirm your scheduled matches are findable | how many matches get a card | nothing to build |
 | 1 | Create the APNs key and give us four values | any push at all | waiting |
 | 2 | Turn on Live Activities in the app target | any push at all | — |
 | 3 | Define `ActivityAttributes` and tell us its type name | the card rendering at all | payload built, name is a config value |
@@ -23,25 +24,50 @@ Everything under `/v1/users/me/*` needs `Authorization: Bearer tt_…`, minted o
 
 ---
 
-## 0. The decision that gates everything
+## 0. Confirm your scheduled matches are findable
 
-Our `matches` table has never contained a row with status `scheduled` — the content pipeline is batch
-and human-driven, so it structurally cannot publish a match *before* it is played. With nothing
-scheduled, there is nothing to flip to `live`, and no card can ever appear.
+**This step used to say something else, and it was wrong.** The earlier version claimed `matches` never
+contains a `scheduled` row and that a rule-3 relaxation was therefore a prerequisite. That was measured
+on the local dev database — 481 rows, all `completed` — and generalised to production, where scheduled
+matches are a product feature. There is no decision here and nothing to relax.
 
-The fix exists and is switched off: `LIVE_CREATE_MATCHES` lets the backend create `scheduled` rows
-from the vendor's fixture feed. That relaxes rule 3 of your handoff ("never auto-create rows"), which
-is why it is your call and not ours.
+What is left is coverage. To flip a match, the ingester has to find our row from the vendor's, and it
+matches on the pair of players plus a time window:
 
-The guard rails, if you say yes: both players must resolve to players we already have, the tournament
-must resolve to an edition we already have, `round_code` must exist in our `rounds` table, singles
-only, a start time must be known, no existing match for that pair in that edition, and the row is
-stamped `import_key = 'livetennisapi:<id>'` so it is always distinguishable from the pipeline's. It
-only ever inserts — the one exception being the start time of its *own* rows, because the vendor
-reschedules fixtures by up to a full day.
+```sql
+where m.status in ('scheduled','live')
+  and m.discipline = 'singles'
+  and m.scheduled_at between (fixture time − 36h) and (fixture time + 36h)
+  and exists (participant = player A) and exists (participant = player B)
+  and (count of participants) = 2
+limit 2
+```
 
-To size it: on the US Open fixture list, **23 of 59** upcoming matches had both players in our
-tracked set. That is how many real cards this fortnight depends on.
+Deliberately *not* keyed on `round_code` — our vocabulary differs between editions (`R128/R64` in one,
+`R1/R2` in another for the same draw) — and not on the tournament, since the pair plus the window is
+already near-unique. More than one hit is refused rather than guessed: it files a `live_unmatched` row
+with `reason='ambiguous'` and moves on. No hit at all files `no_match_row`.
+
+So two properties of a scheduled row decide whether it can ever light up a card:
+
+1. **`scheduled_at` must not be NULL.** `between` on a NULL is NULL, so the row is silently invisible.
+2. **Exactly two `match_participants` rows.** Locally, 36 of 481 matches have only one, and those are
+   excluded by the `count = 2` clause (it doubles as the second doubles guard).
+
+Both are properties of what the scraper writes, so both are fixable there rather than here. Worth
+counting once:
+
+```sql
+select count(*) from matches where status = 'scheduled' and scheduled_at is null;
+select n, count(*) from (select match_id, count(*) n from match_participants group by 1) x
+  join matches m on m.id = x.match_id where m.status = 'scheduled' group by 1;
+```
+
+`LIVE_CREATE_MATCHES` still exists and stays **off**. It lets the backend create `scheduled` rows from
+the vendor's own fixture feed, which is a genuine relaxation of rule 3 and your call — but it is now a
+fallback for tournaments the scraper does not cover, not the thing standing between you and a working
+card. If it is ever switched on, the rows it makes are stamped `import_key = 'livetennisapi:<id>'`,
+insert-only, and cancelled automatically 48h after their start time if they never went live.
 
 ---
 

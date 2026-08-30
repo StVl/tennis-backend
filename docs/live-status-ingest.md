@@ -18,6 +18,21 @@ You do not need to read it to do this task, but it is the authority on anything 
 
 ### Blocking everything: there are no matches to flip
 
+> **Revised 2026-08-30 — this premise is a dev-database artifact, and the section below is wrong
+> about production.** Everything under this heading was measured against the local Docker Postgres,
+> where `matches` is 481 completed rows and nothing else. **Production has `scheduled` matches — they
+> are a product feature.** So the ingester does have rows to flip, rule 3 never needed relaxing, and
+> `LIVE_CREATE_MATCHES` is a fallback for tournaments the scraper does not cover rather than the
+> prerequisite this section calls it.
+>
+> What replaces the blocker is a narrower coverage question, since `FindMatchByPlayers` requires
+> `scheduled_at between …` (a NULL start time never matches) and `count(participants) = 2`. Both are
+> checkable in the scraper's output, and both are its business, not this service's.
+>
+> Read the rest of this section as an accurate description of the local database and an inaccurate
+> one of production. It is left in place because the reasoning built on top of it — the guard on every
+> write, `live_flags`, the fixture writer's guard rails — is still right.
+
 `matches` contains 481 rows, **all `completed`**, the newest scheduled `2026-08-03`. No row has ever
 carried status `scheduled`. Cincinnati is `ongoing` in `v_tournament_editions` with **0 matches**;
 US Open 2026 has 66 `tournament_entries` and **0 matches**.

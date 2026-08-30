@@ -95,9 +95,10 @@ docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/<file>
 Connection string: `postgresql://tennis:tennis@localhost:55432/tennis`.
 
 The local database matches the layout above, plus `db/dev_fixtures.sql`, which creates two
-`scheduled` matches in `us_open_2026`. Those fixtures exist because the real content pipeline is
-batch and human-driven: it cannot produce a match row *before* the match is played, so without
-fixtures there is nothing for the live ingester to flip and no way to test it. Re-running the
+`scheduled` matches in `us_open_2026`. Those fixtures exist because **this local database has no
+`scheduled` rows at all** — 481 matches, every one `completed` — so without them there is nothing for
+the live ingester to flip and no way to test it. That is a property of the local snapshot, not of
+production: production carries scheduled matches as a product feature. Re-running the
 fixtures file refreshes their `scheduled_at` relative to now; cleanup is
 `delete from matches where import_key like 'devfix\_%'`.
 
