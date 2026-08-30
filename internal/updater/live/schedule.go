@@ -1,0 +1,398 @@
+// Package live — cron-джобы ingest'а live-статусов.
+//
+// Их два, и это принципиально. Дешёвый (live-schedule) выясняет, когда играют
+// наши игроки; адаптивный (live-poll, Phase 7) тратит запросы только в эти
+// часы. Обоснование: тик cron'а бесплатен, запрос к источнику — нет, а на
+// free-тарифе их всего 100 в сутки.
+package live
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/StVl/tennis-backend/internal/config"
+	"github.com/StVl/tennis-backend/internal/livesource"
+	"github.com/StVl/tennis-backend/internal/storage"
+)
+
+// SourceFactory создаёт источник со счётчиком запросов, привязанным к текущему
+// прогону. Фабрика, а не готовый Source: счётчик должен писать в строку
+// live_ingest_runs ЭТОГО цикла, а id прогона известен только внутри Update.
+type SourceFactory func(onRequest func()) livesource.Source
+
+// ScheduleUpdater — Job A. Отвечает на вопрос «когда играют наши игроки»
+// и складывает ответ в live_schedule, откуда Job B читает его бесплатно.
+type ScheduleUpdater struct {
+	pool   *pgxpool.Pool
+	newSrc SourceFactory
+	cfg    config.LiveConfig
+}
+
+func NewSchedule(pool *pgxpool.Pool, newSrc SourceFactory, cfg config.LiveConfig) *ScheduleUpdater {
+	return &ScheduleUpdater{pool: pool, newSrc: newSrc, cfg: cfg}
+}
+
+func (u *ScheduleUpdater) Name() string { return "live-schedule" }
+
+func (u *ScheduleUpdater) Update(ctx context.Context) error {
+	if !u.cfg.Enabled {
+		return nil
+	}
+
+	// Подбираем прогоны, которых никто не закрыл: SIGKILL посреди цикла
+	// оставляет finished_at пустым навсегда, а на «последний успешный прогон»
+	// опирается STALE-SAFE.
+	if swept, err := storage.SweepAbandonedRuns(ctx, u.pool, u.Name(),
+		time.Now().Add(-2*u.cfg.UpdateTimeout)); err != nil {
+		slog.Error("live-schedule: sweeping abandoned runs failed", "error", err)
+	} else if swept > 0 {
+		slog.Warn("live-schedule: closed abandoned runs", "count", swept)
+	}
+
+	// Свой ключ блокировки: медленное обновление расписания не должно
+	// блокировать опрос.
+	lock, acquired, err := storage.AcquireLiveLock(ctx, u.pool, storage.LiveLockSchedule)
+	if err != nil {
+		return fmt.Errorf("acquire schedule lock: %w", err)
+	}
+	if !acquired {
+		// Оставляем след: заклинившая блокировка иначе выглядит ровно как
+		// здоровый пропуск, а live_ingest_runs — единственное окно в причины.
+		u.recordSkip(ctx, "lock_held")
+		slog.Info("live-schedule: another instance holds the lock, skipping")
+		return nil
+	}
+	defer lock.Release(ctx)
+
+	keys, err := storage.TrackedExternalKeys(ctx, u.pool, livesource.SourceName)
+	if err != nil {
+		return fmt.Errorf("tracked external keys: %w", err)
+	}
+	if len(keys) == 0 {
+		slog.Warn("live-schedule: no tracked players are mapped to the source; " +
+			"seed db/live_external_ids.sql")
+		return nil
+	}
+
+	runID, startedAt, err := storage.StartRun(ctx, u.pool, u.Name(), livesource.SourceName)
+	if err != nil {
+		return fmt.Errorf("start run: %w", err)
+	}
+
+	src := u.newSrc(func() { storage.IncRunRequests(ctx, u.pool, runID) })
+
+	page, fetchErr := src.Fixtures(ctx, keys)
+
+	// Даже при ошибке пишем то, что успели набрать: лишняя фикстура только
+	// расширяет окно наблюдения, а пустое расписание уложило бы Job B спать
+	// на восемь часов без единой ошибки в логах. Данные и статус прогона
+	// расходятся намеренно — не «исправлять».
+	//
+	// Фильтр по своим игрокам избыточен, пока вендор honours повторяемый
+	// player=, и ровно поэтому он дешёвая страховка. Если фильтр однажды
+	// перестанет применяться (переименование параметра, Set вместо Add,
+	// изменение на стороне вендора), без этой проверки Job A принял бы за
+	// «наше расписание» весь борт upcoming — 309 строк в снятом срезе — и
+	// Job B считал бы, что смотреть надо всегда: вечный WATCHING, квота
+	// выедается каждый день, и ни одной ошибки нигде.
+	tracked := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		tracked[k] = struct{}{}
+	}
+
+	rows := make([]storage.ScheduleRow, 0, len(page.Fixtures))
+	seen := make(map[string]int, len(page.Fixtures))
+	foreign, duplicates := 0, 0
+	for _, f := range page.Fixtures {
+		if _, ok := tracked[f.PlayerKeys[0]]; !ok {
+			if _, ok := tracked[f.PlayerKeys[1]]; !ok {
+				foreign++
+				continue
+			}
+		}
+		// Источник возвращает матч в КАЖДОМ батче player=, где есть хоть один
+		// его игрок, поэтому матч двух отслеживаемых приходит дважды. Дедуп
+		// здесь: без него счётчики врут (в снятом прогоне 69 строк на 59
+		// фикстур), а батч делает лишние операции.
+		if i, ok := seen[f.ExternalKey]; ok {
+			rows[i] = row(f)
+			duplicates++
+			continue
+		}
+		seen[f.ExternalKey] = len(rows)
+		rows = append(rows, row(f))
+	}
+	if foreign > 0 {
+		slog.Warn("live-schedule: fixtures without a tracked player were dropped; "+
+			"the vendor's player= filter may have stopped applying",
+			"dropped", foreign, "kept", len(rows))
+	}
+
+	// Чистим только заведомо прошедшее. Не «всё, чего не было в этом прогоне»:
+	// выдача upcoming теряет матч в момент выхода на корт, и такая чистка
+	// стёрла бы окно ровно у идущего матча.
+	keepBefore := startedAt.Add(-2 * u.cfg.WatchTail)
+	staleRefresh := startedAt.Add(-48 * time.Hour)
+	upserted, pruned, err := storage.UpsertSchedule(
+		ctx, u.pool, livesource.SourceName, rows, startedAt, keepBefore, staleRefresh)
+
+	result := storage.RunResult{
+		RowsParsed:            intPtr(page.RowsParsed),
+		RowsInScope:           intPtr(len(rows)),
+		RowsDroppedUnresolved: intPtr(foreign),
+		Mode:                  "refresh",
+	}
+	switch {
+	case fetchErr != nil:
+		result.Error = fetchErr.Error()
+	case err != nil:
+		result.Error = err.Error()
+	}
+	if finishErr := storage.FinishRun(ctx, u.pool, runID, result); finishErr != nil {
+		slog.Error("live-schedule: failed to close the run row", "error", finishErr)
+	}
+
+	if err != nil {
+		return fmt.Errorf("upsert schedule: %w", err)
+	}
+	if fetchErr != nil {
+		return fmt.Errorf("fetch fixtures: %w", fetchErr)
+	}
+
+	// Создание строк matches из фикстур. По умолчанию выключено: это
+	// ослабление правила 3 из docs/live-status-ingest.md, и решение за
+	// iOS-стороной. Ошибка здесь не валит прогон — расписание уже записано,
+	// а оно и есть основная задача Job A.
+	if u.cfg.CreateMatches {
+		if err := u.createMatches(ctx, page.Fixtures, startedAt); err != nil {
+			slog.Error("live-schedule: creating matches from fixtures failed", "error", err)
+		}
+	}
+
+	// Чистка журналов. Job A — подходящее место: он редкий, и лишний проход
+	// по служебным таблицам три раза в сутки ничего не стоит.
+	if purged, err := storage.PruneLiveTables(ctx, u.pool, startedAt,
+		storage.DefaultRetention()); err != nil {
+		slog.Error("live-schedule: pruning the ingest journals failed", "error", err)
+	} else if len(purged) > 0 {
+		slog.Info("live-schedule: pruned ingest journals", "deleted", purged)
+	}
+
+	// Сверка квоты с самим вендором. Наша арифметика исходит из того, что
+	// сутки квоты сбрасываются в полночь UTC; если у него иначе, регулятор
+	// часть суток считает неверно и мы упираемся в 429 в предсказуемое время.
+	// Стоит один запрос на прогон Job A, то есть три в сутки из ста.
+	u.reconcileQuota(ctx, src)
+
+	withoutTime := 0
+	for _, f := range rows {
+		if f.ScheduledAt == nil {
+			withoutTime++
+		}
+	}
+	// Сводка очереди ревью: без неё «dropped=7» в логе цикла ни на что не
+	// указывает, а именно из этой очереди пополняются сиды розыгрышей и игроков.
+	if queue, err := storage.UnmatchedQueue(ctx, u.pool, livesource.SourceName); err != nil {
+		slog.Error("live-schedule: reading the review queue failed", "error", err)
+	} else {
+		for _, q := range queue {
+			slog.Warn("live-schedule: review queue needs attention",
+				"reason", q.Reason, "count", q.Count, "samples", q.Samples,
+				"hint", queueHint(q.Reason))
+		}
+	}
+
+	slog.Info("live-schedule: updated",
+		"players", len(keys), "rows_parsed", page.RowsParsed,
+		"stored", upserted, "duplicates", duplicates, "pruned", pruned, "foreign", foreign,
+		"doubles", page.RowsDoubles, "cancelled", page.RowsCancelled,
+		"unusable", page.RowsUnusable,
+		// Фикстура без времени окна наблюдения не открывает — это видно здесь,
+		// а не выясняется потом по отсутствию карточек.
+		"without_start_time", withoutTime)
+	return nil
+}
+
+// queueHint подсказывает, что с этой причиной делать: очередь читают редко и
+// без подсказки она превращается в свалку.
+func queueHint(reason string) string {
+	switch reason {
+	case "edition_unmapped":
+		return "add the tournament id to db/live_edition_ids.sql, or confirm an existing unconfirmed row"
+	case "round_unmapped":
+		return "the vendor's round code is not in our rounds table; decide whether to add it there"
+	case "one_side_unresolved":
+		return "an opponent is unknown to us; the lazy resolver refused, so confirm by hand if it matters"
+	case "no_match_row":
+		return "we have no match for these two; expected until LIVE_CREATE_MATCHES is on"
+	case "ambiguous":
+		return "more than one of our matches fits; needs a human"
+	}
+	return ""
+}
+
+// reconcileQuota сверяет наш счётчик с ответом источника.
+//
+// Не падает при расхождении: вендор — истина, но действовать по ней здесь
+// нечем, зато расхождение видно в логах до того, как начнутся 429.
+func (u *ScheduleUpdater) reconcileQuota(ctx context.Context, src livesource.Source) {
+	client, ok := src.(interface {
+		Usage(context.Context) (livesource.Usage, error)
+	})
+	if !ok {
+		return
+	}
+	usage, err := client.Usage(ctx)
+	if err != nil {
+		slog.Warn("live-schedule: usage check failed", "error", err)
+		return
+	}
+	ours := u.cfg.DailyQuota - usage.CallsToday - u.cfg.Reserve
+	slog.Info("live-schedule: vendor quota",
+		"tier", usage.Tier, "per_day", usage.PerDay,
+		"calls_today", usage.CallsToday, "vendor_remaining", usage.RemainingDay,
+		"our_budget_left", ours)
+	if usage.PerDay != u.cfg.DailyQuota {
+		slog.Warn("live-schedule: LIVE_DAILY_QUOTA does not match the vendor's limit; "+
+			"the governor is pacing against the wrong number",
+			"configured", u.cfg.DailyQuota, "vendor", usage.PerDay)
+	}
+	if usage.RemainingDay <= u.cfg.Reserve {
+		slog.Error("live-schedule: the vendor says we are nearly out of quota today",
+			"vendor_remaining", usage.RemainingDay, "reserve", u.cfg.Reserve)
+	}
+}
+
+// createMatches превращает фикстуры в строки matches со статусом scheduled.
+//
+// Это единственное место, где сервис ДОБАВЛЯЕТ строки в matches, а не меняет
+// один столбец. Каждая проверка ниже отделяет «можно создать» от «угадали бы»,
+// и ни одна не необязательна.
+func (u *ScheduleUpdater) createMatches(ctx context.Context,
+	fixtures []livesource.Fixture, now time.Time) error {
+
+	editionKeys := make([]string, 0, len(fixtures))
+	playerKeys := make([]string, 0, len(fixtures)*2)
+	for _, f := range fixtures {
+		if f.TournamentKey != "" {
+			editionKeys = append(editionKeys, f.TournamentKey)
+		}
+		playerKeys = append(playerKeys, f.PlayerKeys[0], f.PlayerKeys[1])
+	}
+	editions, err := storage.ResolveEditions(ctx, u.pool, livesource.SourceName, editionKeys)
+	if err != nil {
+		return fmt.Errorf("resolve editions: %w", err)
+	}
+	players, err := storage.ResolvePlayerKeys(ctx, u.pool, livesource.SourceName, playerKeys)
+	if err != nil {
+		return fmt.Errorf("resolve players: %w", err)
+	}
+
+	var created, exists, rescheduled, unknownRound, skipped int
+	for _, f := range fixtures {
+		// Квалификация: наши розыгрыши — основные сетки, и строки квалификации
+		// в них попадать не должны. В снятом срезе это 84 строки из 200, то
+		// есть случай массовый, а не краевой.
+		if f.IsQualifying {
+			skipped++
+			continue
+		}
+		// Без времени начала строка бесполезна: она не откроет окна наблюдения
+		// и не найдётся поиском по окну вокруг времени фикстуры.
+		if f.ScheduledAt == nil {
+			skipped++
+			continue
+		}
+		editionID, ok := editions[f.TournamentKey]
+		if !ok {
+			// Именно ЭТА очередь и пополняет db/live_edition_ids.sql.
+			// Угадывать розыгрыш нельзя: неверная догадка создаёт матч в
+			// чужой сетке.
+			_ = storage.RecordUnmatched(ctx, u.pool, livesource.SourceName,
+				storage.UnmatchedRow{
+					ExternalKey: f.ExternalKey,
+					PlayerKeys:  []string{f.PlayerKeys[0], f.PlayerKeys[1]},
+					RoundCode:   f.RoundCode,
+				}, "edition_unmapped", now)
+			skipped++
+			continue
+		}
+		p1, ok1 := players[f.PlayerKeys[0]]
+		p2, ok2 := players[f.PlayerKeys[1]]
+		if !ok1 || !ok2 {
+			// Создаём только то, где известны ОБА игрока: матч с одним
+			// участником невидим для поиска по игрокам.
+			skipped++
+			continue
+		}
+
+		_, outcome, err := storage.CreateMatchFromFixture(ctx, u.pool, storage.MatchDraft{
+			EditionID:   editionID,
+			RoundCode:   f.RoundCode,
+			ScheduledAt: *f.ScheduledAt,
+			PlayerIDs:   [2]int64{p1, p2},
+			ExternalKey: f.ExternalKey,
+		})
+		if err != nil {
+			return fmt.Errorf("create match %s: %w", f.ExternalKey, err)
+		}
+		switch outcome {
+		case storage.CreateDone:
+			created++
+		case storage.CreateExists:
+			exists++
+		case storage.CreateRescheduled:
+			rescheduled++
+		case storage.CreateUnknownRound:
+			unknownRound++
+			_ = storage.RecordUnmatched(ctx, u.pool, livesource.SourceName,
+				storage.UnmatchedRow{
+					ExternalKey: f.ExternalKey,
+					PlayerKeys:  []string{f.PlayerKeys[0], f.PlayerKeys[1]},
+					RoundCode:   f.RoundCode,
+				}, "round_unmapped", now)
+		}
+	}
+
+	slog.Info("live-schedule: matches from fixtures",
+		"created", created, "already_existed", exists, "rescheduled", rescheduled,
+		"unknown_round", unknownRound, "skipped", skipped)
+	return nil
+}
+
+// recordSkip оставляет строку прогона для тика, который ничего не потратил.
+func (u *ScheduleUpdater) recordSkip(ctx context.Context, reason string) {
+	runID, _, err := storage.StartRun(ctx, u.pool, u.Name(), livesource.SourceName)
+	if err != nil {
+		slog.Error("live-schedule: failed to record a skipped run", "error", err)
+		return
+	}
+	if err := storage.FinishRun(ctx, u.pool, runID,
+		storage.RunResult{SkippedReason: reason}); err != nil {
+		slog.Error("live-schedule: failed to close a skipped run", "error", err)
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+// staleAfter — через сколько отсутствие успешного прогона Job A считается
+// протухшим расписанием.
+const staleAfter = 12 * time.Hour
+
+// runRetention — сколько держим журнал прогонов.
+const runRetention = 14 * 24 * time.Hour
+
+func row(f livesource.Fixture) storage.ScheduleRow {
+	return storage.ScheduleRow{
+		ExternalKey:   f.ExternalKey,
+		TournamentKey: f.TournamentKey,
+		RoundCode:     f.RoundCode,
+		Tournament:    f.Tournament,
+		ScheduledAt:   f.ScheduledAt,
+		PlayerKeys:    f.PlayerKeys[:],
+	}
+}

@@ -7,3 +7,6 @@ bin/
 
 # macOS
 .DS_Store
+
+# снапшот ростера из Live Tennis API (побочный продукт офлайн-маппинга)
+players.json

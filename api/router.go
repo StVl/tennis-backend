@@ -8,8 +8,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func NewRouter(pool *pgxpool.Pool) http.Handler {
-	handler := NewHandler(pool)
+// NewRouter собирает роутер. Ручные триггеры подключаются только когда включён
+// cfg.DevEndpoints — гейт стоит здесь, на регистрации маршрута, а не внутри
+// обработчика: выключенный флаг означает, что ручки нет вовсе, а не что она
+// отвечает 404.
+func NewRouter(pool *pgxpool.Pool, cfg HandlerConfig) http.Handler {
+	handler := NewHandler(pool, cfg)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -56,7 +60,21 @@ func NewRouter(pool *pgxpool.Pool) http.Handler {
 			r.Delete("/follows/{slug}", handler.RemoveFollow)
 			r.Get("/home", handler.MyHome)
 			r.Get("/widget", handler.MyWidget)
+			r.Get("/live-matches", handler.MyLiveMatches)
+			r.Put("/push-token", handler.RegisterPushToken)
+			r.Put("/live-activities/{id}", handler.RegisterActivityToken)
 		})
+
+		// ручные триггеры live-статуса, только под DEV_ENDPOINTS_ENABLED
+		if cfg.DevEndpoints {
+			r.Route("/dev", func(r chi.Router) {
+				r.Post("/matches/{id}/live", handler.DevMatchLive)
+				r.Post("/matches/{id}/finish", handler.DevMatchFinish)
+				r.Get("/matches/{id}/live-state", handler.DevLiveState)
+				r.Post("/live/ingest", handler.DevLiveIngest)
+				r.Get("/live/unmatched", handler.DevUnmatchedQueue)
+			})
+		}
 	})
 
 	return r
