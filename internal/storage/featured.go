@@ -47,7 +47,7 @@ func featuredCopy(in featuredInput) (title, meta, stage string) {
 	switch {
 	case in.status == "ongoing":
 		n, total := tournamentDay(in.now, in.start, in.end)
-		title = pick(in.lang, "On court now", "На корте")
+		title = pick(in.lang, "On court now", "Идёт турнир")
 		meta = fmt.Sprintf(pick(in.lang, "Day %d of %d", "День %d из %d"), n, total)
 		if in.roundLabel != "" {
 			stage = in.roundLabel + " · " + pick(in.lang, fmt.Sprintf("Day %d", n), fmt.Sprintf("День %d", n))

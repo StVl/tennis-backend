@@ -108,6 +108,7 @@ func currentRoundLabel(ctx context.Context, pool *pgxpool.Pool, lang, edition st
 		join tournament_editions te on te.id = m.edition_id
 		join rounds ro on ro.code = m.round_code
 		where te.slug = $1 and m.status in ('live', 'scheduled')
+		  and m.round_code !~* '^q[0-9]'
 		order by case when m.status = 'live' then 0 else 1 end, ro.sort_order, m.id
 		limit 1`, edition, lang).Scan(&label)
 	if errors.Is(err, pgx.ErrNoRows) {

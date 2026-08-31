@@ -30,6 +30,19 @@ func TestFeaturedCopyOngoing(t *testing.T) {
 	if title != "On court now" || meta != "Day 8 of 14" || stage != "Round of 16 · Day 8" {
 		t.Fatalf("got %q / %q / %q", title, meta, stage)
 	}
+
+	title, _, _ = featuredCopy(featuredInput{
+		lang:       "ru",
+		now:        time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		status:     "ongoing",
+		drawStatus: "drawn",
+		start:      time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC),
+		end:        time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC),
+		surface:    "grass",
+	})
+	if title != "Идёт турнир" {
+		t.Fatalf("ru title %q", title)
+	}
 }
 
 func TestFeaturedCopyAwaitingDraw(t *testing.T) {

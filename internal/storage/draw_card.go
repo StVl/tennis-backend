@@ -77,6 +77,7 @@ func loadDrawCard(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug str
 		left join countries c2 on c2.code = p2.country_code
 		left join tournament_entries e2 on e2.edition_id = te.id and e2.player_id = p2.id
 		where te.slug = $1
+		  and m.round_code !~* '^q[0-9]'
 		order by ro.sort_order, m.bracket_pos nulls last, m.id`,
 		editionSlug, lang)
 	if err != nil {
