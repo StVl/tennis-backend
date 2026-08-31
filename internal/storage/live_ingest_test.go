@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	livedb "github.com/StVl/tennis-backend/db"
 	"os"
 	"testing"
 	"time"
@@ -235,4 +236,48 @@ func TestUpsertScheduleIsIncremental(t *testing.T) {
 	if gotRound != "QF" || !gotAt.Equal(later) {
 		t.Errorf("строка не обновилась: round=%q at=%v", gotRound, gotAt)
 	}
+}
+
+// Схема применяется на старте сервиса, то есть на каждом деплое. Тест держит
+// два свойства, без которых это опасно: применяется на чистой базе и повторный
+// прогон ничего не ломает.
+func TestApplyLiveSchemaIsIdempotent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	schema := embeddedSchemaForTest(t)
+	for i := 1; i <= 2; i++ {
+		if err := ApplyLiveSchema(ctx, pool, schema); err != nil {
+			t.Fatalf("прогон %d: %v", i, err)
+		}
+	}
+
+	// таблицы на месте и сиды не задвоились
+	var tables, players int
+	if err := pool.QueryRow(ctx, `
+		select (select count(*) from information_schema.tables
+		         where table_schema='public' and table_name like 'live%'),
+		       (select count(*) from external_ids where entity_type='player')`).
+		Scan(&tables, &players); err != nil {
+		t.Fatal(err)
+	}
+	if tables < 8 {
+		t.Errorf("live-таблиц %d, ожидалось не меньше 8", tables)
+	}
+	if players == 0 {
+		t.Error("сид игроков не применился: в базе есть players, значит джойн должен был найти строки")
+	}
+}
+
+func embeddedSchemaForTest(t *testing.T) []SchemaFile {
+	t.Helper()
+	files, err := livedb.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]SchemaFile, 0, len(files))
+	for _, f := range files {
+		out = append(out, SchemaFile{Name: f.Name, SQL: f.SQL})
+	}
+	return out
 }

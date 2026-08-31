@@ -58,8 +58,12 @@ from (values
 join tournament_editions te on te.slug = v.edition_slug
 -- do update, а не do nothing: этот файл и есть источник истины по маппингу,
 -- и повторный прогон должен подтягивать изменения, а не игнорировать их.
+-- coalesce, а не excluded: файл применяется на каждом старте сервиса, и без
+-- этого отметка подтверждения переставлялась бы на время последнего деплоя.
+-- Первое подтверждение сохраняется; неподтверждённый id подтвердить можно.
 on conflict (source, entity_type, external_key) do update
-  set entity_id = excluded.entity_id, confirmed_at = excluded.confirmed_at;
+  set entity_id = excluded.entity_id,
+      confirmed_at = coalesce(external_ids.confirmed_at, excluded.confirmed_at);
 
 -- Снятые ранее строки. 1209 и 1218 — женские сетки, 1221 — парная; 1211, 8656,
 -- 1726 и 2795 в ATP-каталоге отсутствуют и, судя по разбивке выше, тоже

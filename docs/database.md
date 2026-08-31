@@ -31,10 +31,23 @@ psql "$DATABASE_URL" -f db/schema.sql
 #    Also in tennis-data-storage:
 DATABASE_URL="$DATABASE_URL" python3 scripts/migrate_data.py     # --dry-run to rehearse
 
-# 3. Vendor id mappings — this repo, and only after step 2.
+# 3. Live-ingest tables and vendor id mappings — this repo.
+#    Normally you do NOT run this: the service applies it on every boot.
+#    By hand, if you want it before the deploy:
+psql "$DATABASE_URL" -f db/live_ingest.sql
+psql "$DATABASE_URL" -f db/live_push.sql
 psql "$DATABASE_URL" -f db/live_external_ids.sql
 psql "$DATABASE_URL" -f db/live_edition_ids.sql
 ```
+
+**Step 3 applies itself.** The four files are embedded in the binary (`db/embed.go`) and run at
+startup under an advisory lock, so a deploy is enough and nobody needs psql against production.
+`LIVE_SCHEMA_AUTO_APPLY=false` turns that off. A failure is logged, not fatal: it breaks the live
+feature only, and taking the whole API down over it would be worse. Two instances booting together
+are fine — the second sees the lock held and skips, because the work is idempotent anyway.
+
+`db/dev_fixtures.sql` is deliberately **not** embedded: it creates synthetic matches, and this set
+runs on production.
 
 **Why step 3 has to come last.** Those two files map the vendor's ids onto ours by *slug*:
 

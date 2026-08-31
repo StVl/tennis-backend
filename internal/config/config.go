@@ -9,13 +9,17 @@ import (
 )
 
 type Config struct {
-	HTTPPort         string
-	DatabaseURL      string
-	TournamentsCron  string
-	PlayersCron      string
-	UpdateTimeout    time.Duration
-	DBMaxConns       int32
-	DevEndpoints     bool
+	HTTPPort        string
+	DatabaseURL     string
+	TournamentsCron string
+	PlayersCron     string
+	UpdateTimeout   time.Duration
+	DBMaxConns      int32
+	DevEndpoints    bool
+	// Применять DDL live-ingest'а на старте. По умолчанию ДА: таблицами live_*
+	// владеет этот сервис, файлы идемпотентны, а прямого доступа к продовой
+	// базе у людей нет.
+	ApplyLiveSchema  bool
 	LiveMatchesLimit int
 	Live             LiveConfig
 	Push             PushConfig
@@ -59,6 +63,7 @@ func Load() (*Config, error) {
 		UpdateTimeout:    updateTimeout,
 		DBMaxConns:       dbMaxConns,
 		DevEndpoints:     envBool("DEV_ENDPOINTS_ENABLED", false),
+		ApplyLiveSchema:  envBool("LIVE_SCHEMA_AUTO_APPLY", true),
 		LiveMatchesLimit: envInt("LIVE_MATCHES_LIMIT", 50),
 		Live:             live,
 		Push:             push,
