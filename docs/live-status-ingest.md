@@ -333,6 +333,23 @@ Canonical schema lives in [tennis-data-storage](https://github.com/StVl/tennis-d
 (`db/schema.sql`). Coordinate additions there; do not silently create tables only this service knows
 about.
 
+> **Revised 2026-08-31 — this instruction was considered and deliberately reversed.** The `live_*`
+> tables and `external_ids` are owned by this service: it defines them in `db/live_*.sql`, applies
+> them itself on boot (`internal/storage/schema.go`), and documents them in `docs/database.md`. They
+> are **not** carried into tennis-data-storage.
+>
+> Two reasons. Practical: nobody has psql access to the production database, so a schema that only
+> lands by someone running a file there does not land at all — the boot applier is what actually gets
+> the tables created. Architectural: tennis-data-storage owns the content schema and should not know
+> who reads it; carrying our tables there would make it document a state machine, an outbox and a
+> review queue whose semantics it has no part in.
+>
+> What the instruction was protecting still holds, and is enforced elsewhere: this service creates no
+> table the content schema owns, changes no column of one except `matches.status`, and guards every
+> such write on the current value. A PR carrying the DDL over was opened and closed on these grounds.
+> A rebuilt database therefore has no `live_*` tables until this service boots — that is the intended
+> order.
+
 ```sql
 -- Maps the source's own ids onto ours. Resolve once, look up forever.
 create table external_ids (

@@ -1,5 +1,5 @@
 -- Маппинг турниров Live Tennis API -> наши tournament_editions.
--- Канонические DDL живут в tennis-data-storage; здесь рабочая копия и сид.
+-- Владелец — этот сервис; см. db/live_ingest.sql про разделение владения.
 --
 -- Применить:
 --   docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/live_edition_ids.sql
