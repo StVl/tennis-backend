@@ -11,11 +11,10 @@ import (
 
 // HomeFeed — весь главный экран одним ответом (замена config.json + playerCards).
 type HomeFeed struct {
-	YourSeason []SeasonCard `json:"your_season"`
-	AllPlayers []GridPlayer `json:"all_players"`
-	// Итоги недели у подписок: завершённые матчи, важные раунды сверху. Нейтральная форма
-	// матча — карточка показывает обоих игроков и счёт по сетам, а не «мой игрок против».
-	WeeklyHighlights []Match `json:"weekly_highlights"`
+	YourSeason           []SeasonCard         `json:"your_season"`
+	AllPlayers           []GridPlayer         `json:"all_players"`
+	WeeklyHighlights     []Match              `json:"weekly_highlights"`
+	FeaturedTournament   *FeaturedTournament  `json:"featured_tournament"`
 }
 
 // SeasonCard — большая карточка подписанного игрока.
@@ -207,9 +206,10 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 	}
 
 	feed := &HomeFeed{
-		YourSeason:       []SeasonCard{},
-		AllPlayers:       make([]GridPlayer, 0, len(roster)),
-		WeeklyHighlights: []Match{},
+		YourSeason:         []SeasonCard{},
+		AllPlayers:         make([]GridPlayer, 0, len(roster)),
+		WeeklyHighlights:   []Match{},
+		FeaturedTournament: nil,
 	}
 	rosterBySlug := map[string]PlayerListItem{}
 	for _, p := range roster {
@@ -219,6 +219,12 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 			Rank: p.Rank, RankDelta: p.RankDelta, Followed: followedSet[p.Slug],
 		})
 	}
+
+	featured, err := loadFeaturedTournament(ctx, pool, lang, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	feed.FeaturedTournament = featured
 
 	if len(followed) == 0 {
 		return feed, nil
