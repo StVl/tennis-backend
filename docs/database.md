@@ -122,9 +122,23 @@ suite is still green — see the warning in `CLAUDE.md`.
 
 - **A schema change here is a cross-repo PR.** There are no migrations in this repo. Editing
   `db/*.sql` changes nothing anywhere until it is applied locally *and* carried over.
-- **`create table if not exists` hides edits.** Changing a table definition in a file that has
-  already been applied does nothing to an existing database. Either write the `alter`, or drop and
-  rebuild.
+- **This is a bootstrap, not a migration tool — know the difference.** There is no ledger, no
+  ordering guarantee beyond the fixed file list, no rollback and no drift detection. It re-runs
+  everything every boot and relies on idempotency. It behaves like a migration exactly once.
+- **So: to change a table, append an idempotent `alter`; never edit the `create`.** Editing a
+  `create table if not exists` does **nothing** to an existing database — the table exists, Postgres
+  skips it, local dev looks right because it was built fresh, and production silently keeps the old
+  shape. The working pattern is already in `db/live_push.sql`:
+
+  ```sql
+  alter table live_events add column if not exists attempts int not null default 0;
+  ```
+
+  That is idempotent *and* it mutates an existing table, so it survives the re-run.
+- **What this mechanism cannot do**, at all: rename a column, change a type, drop anything, add a
+  `not null` column without a default to a populated table, or run a backfill that isn't idempotent.
+  The first time you need one of those, reach for a real migration tool (goose, dbmate) and delete
+  the boot applier — until then it would be machinery without a job.
 - **`external_ids` is N:1 and its `entity_id` has no foreign key**, both deliberately. One entity can
   have several vendor keys — the vendor carries split identities for the same player, and different
   tours and draws of one tournament are different ids (`US Open`: 1217 atp, 1218 wta, 1221 doubles).
