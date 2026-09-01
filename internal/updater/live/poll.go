@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,11 +25,41 @@ const createdMatchTTL = 48 * time.Hour
 // не в том состоянии, и цикл продолжается.
 var errFlipRefused = errors.New("flip refused by guard")
 
+// maxLoggedMatchIDs — сколько id матчей попадает в одну строку лога. Борт
+// источника — это весь мир, и чужих live-строк в базе бывают десятки: без
+// отсечки они печатались бы целиком на каждом тике.
+const maxLoggedMatchIDs = 10
+
 // PollUpdater — Job B. Тикает часто, тратит редко.
 type PollUpdater struct {
 	pool   *pgxpool.Pool
 	newSrc SourceFactory
 	cfg    config.LiveConfig
+
+	// Отпечаток последнего залогированного набора чужих live-матчей.
+	// Состояние нужно ТОЛЬКО для подавления повтора в логе: набор стабилен, а
+	// тик раз в пять минут печатал бы одну и ту же строку 288 раз в сутки.
+	// Потеря при рестарте безвредна — будет одна лишняя строка; поэтому здесь
+	// память, а не БД (ср. правило 4: в Postgres живёт состояние дебаунса).
+	// Мьютекс — потому что cron с пустой цепочкой перехлёст прогонов НЕ
+	// исключает, он лишь маловероятен из-за проверки таймаута в конфиге.
+	mu              sync.Mutex
+	loggedUnflagged string
+}
+
+// noteUnflagged сообщает, изменился ли набор чужих live-матчей с прошлого раза.
+// Побочный эффект — запоминание нового набора, поэтому вызывать один раз за тик.
+func (u *PollUpdater) noteUnflagged(ids []int64) bool {
+	slices.Sort(ids)
+	fp := fmt.Sprint(ids)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if fp == u.loggedUnflagged {
+		return false
+	}
+	u.loggedUnflagged = fp
+	return true
 }
 
 func NewPoll(pool *pgxpool.Pool, newSrc SourceFactory, cfg config.LiveConfig) *PollUpdater {
@@ -177,14 +209,23 @@ func (u *PollUpdater) reconcile(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	if len(unflagged) > 0 {
-		// Не присваиваем: prior_status пришлось бы выдумать, а неверное
-		// восстановление затрёт результат пайплайна. Но и молчать нельзя —
-		// это ложная карточка у всех подписчиков обоих игроков.
-		slog.Error("live: matches are live with no flag of ours; something wrote "+
+	// Не присваиваем: prior_status пришлось бы выдумать, а неверное
+	// восстановление затрёт результат пайплайна. Но и молчать нельзя — эти
+	// матчи отдаёт /v1/users/me/live-matches, а погасить их нам нечем.
+	//
+	// Уровень WARN, а не ERROR, и только при ИЗМЕНЕНИИ набора. Причина: в общей
+	// базе пайплайн контента сам ставит status='live' из своего isLive, то есть
+	// это НОРМАЛЬНОЕ состояние, а не сбой. На ERROR оно поднимало бы алерты
+	// Railway 288 раз в сутки и на порядок перекрывало настоящие ошибки Job B.
+	if u.noteUnflagged(unflagged) && len(unflagged) > 0 {
+		ids := unflagged
+		if len(ids) > maxLoggedMatchIDs {
+			ids = ids[:maxLoggedMatchIDs]
+		}
+		slog.Warn("live: matches are live with no flag of ours; something wrote "+
 			"matches.status outside this service. They will not be swept: restoring "+
 			"a status we never recorded would be a guess",
-			"match_ids", unflagged, "count", len(unflagged))
+			"match_ids", ids, "count", len(unflagged))
 	}
 
 	// Уборка наших созданных строк живёт ЗДЕСЬ, а не в создателе, и вызывается
