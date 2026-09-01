@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/StVl/tennis-backend/api"
+	livedb "github.com/StVl/tennis-backend/db"
 	"github.com/StVl/tennis-backend/internal/apns"
 	"github.com/StVl/tennis-backend/internal/config"
 	"github.com/StVl/tennis-backend/internal/livesource"
@@ -45,6 +46,19 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	// Схема live-ингеста применяется здесь, а не руками: до продовой базы
+	// прямого доступа нет, а файлы идемпотентны. Ошибка не фатальна — она
+	// ломает только live-фичу, и уронить из-за неё весь сервис было бы хуже.
+	if cfg.ApplyLiveSchema {
+		schema, err := livedb.Files()
+		if err != nil {
+			slog.Error("live schema: reading embedded files failed", "error", err)
+		} else if err := storage.ApplyLiveSchema(rootCtx, pool, toSchemaFiles(schema)); err != nil {
+			slog.Error("live schema: not applied; live endpoints will fail until it is",
+				"error", err)
+		}
+	}
 
 	tournamentsUpdater := tournaments.New(pool)
 	playersUpdater := players.New(pool)
@@ -192,4 +206,12 @@ func runOnce(ctx context.Context, jobs []scheduler.Job, name string,
 		available = append(available, job.Updater.Name())
 	}
 	return fmt.Errorf("RUN_ONCE=%q: unknown job; available: %v", name, available)
+}
+
+func toSchemaFiles(in []livedb.File) []storage.SchemaFile {
+	out := make([]storage.SchemaFile, 0, len(in))
+	for _, f := range in {
+		out = append(out, storage.SchemaFile{Name: f.Name, SQL: f.SQL})
+	}
+	return out
 }

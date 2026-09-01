@@ -7,7 +7,8 @@ reason this file exists.
 
 | | [tennis-data-storage](https://github.com/StVl/tennis-data-storage) | tennis-backend (here) |
 |---|---|---|
-| Schema (tables, types, views) | **owns it** — `db/schema.sql` | copies under `db/`, carried over by PR |
+| Content schema (players, tournaments, matches, views) | **owns it** — `db/schema.sql` | reads it, never changes it |
+| Live-ingest schema (`live_*`, `external_ids`) | knows nothing about it | **owns it** — `db/live_*.sql`, applied on boot |
 | Content data (players, tournaments, matches, results) | **owns it** — `scripts/migrate_data.py` from `data/*.json` | never writes it |
 | Vendor id mappings (`external_ids`) | holds the table | **owns the rows** — `db/live_*_ids.sql` |
 | Live status (`matches.status`) | never writes it | **owns it**, one column, always guarded |
@@ -31,10 +32,23 @@ psql "$DATABASE_URL" -f db/schema.sql
 #    Also in tennis-data-storage:
 DATABASE_URL="$DATABASE_URL" python3 scripts/migrate_data.py     # --dry-run to rehearse
 
-# 3. Vendor id mappings — this repo, and only after step 2.
+# 3. Live-ingest tables and vendor id mappings — this repo.
+#    Normally you do NOT run this: the service applies it on every boot.
+#    By hand, if you want it before the deploy:
+psql "$DATABASE_URL" -f db/live_ingest.sql
+psql "$DATABASE_URL" -f db/live_push.sql
 psql "$DATABASE_URL" -f db/live_external_ids.sql
 psql "$DATABASE_URL" -f db/live_edition_ids.sql
 ```
+
+**Step 3 applies itself.** The four files are embedded in the binary (`db/embed.go`) and run at
+startup under an advisory lock, so a deploy is enough and nobody needs psql against production.
+`LIVE_SCHEMA_AUTO_APPLY=false` turns that off. A failure is logged, not fatal: it breaks the live
+feature only, and taking the whole API down over it would be worse. Two instances booting together
+are fine — the second sees the lock held and skips, because the work is idempotent anyway.
+
+`db/dev_fixtures.sql` is deliberately **not** embedded: it creates synthetic matches, and this set
+runs on production.
 
 **Why step 3 has to come last.** Those two files map the vendor's ids onto ours by *slug*:
 
@@ -65,19 +79,23 @@ That warning (`internal/updater/live/schedule.go:76`) is the intended detector f
 
 ## What each file in `db/` is
 
-| File | Carried to tennis-data-storage? | What it is |
+| File | Applied on boot? | What it is |
 |---|---|---|
-| `live_ingest.sql` | **yes** — schema | The seven ingest tables: runs, observations, flags, schedule, unmatched, events, resolve attempts |
-| `live_push.sql` | **yes** — schema | `live_activity_sessions` (+ `device_push_tokens`, see below) |
-| `live_external_ids.sql` | table yes, **rows no** | `external_ids` DDL + 134 player mappings |
-| `live_edition_ids.sql` | **rows no** | 5 tournament mappings, ATP singles only |
+| `live_ingest.sql` | yes | The seven ingest tables: runs, observations, flags, schedule, unmatched, events, resolve attempts |
+| `live_push.sql` | yes | `live_activity_sessions` (+ `device_push_tokens`, see below) |
+| `live_external_ids.sql` | yes | `external_ids` DDL + 134 player mappings |
+| `live_edition_ids.sql` | yes | 5 tournament mappings, ATP singles only |
 | `dev_fixtures.sql` | **never** | Two synthetic `scheduled` matches for local testing. Marked "не переносить" |
 
-The schema half of the first four went over in
-[tennis-data-storage#1](https://github.com/StVl/tennis-data-storage/pull/1). The mapping *rows* stay
-here on purpose: they are maintained from a queue that lives here. An unrecognised vendor id lands in
-`live_unmatched` with `reason='edition_unmapped'`, a human adds a line to the file, and it is
-re-applied. That loop belongs next to the service that produces the queue.
+None of it goes to tennis-data-storage. That repo owns the content schema and should not know who
+reads it, so the dependency points one way: this service knows about `players` and `matches`, and
+nothing over there knows about `live_flags`. A consequence worth expecting: a database rebuilt from
+`tennis-data-storage/db/schema.sql` alone has no `live_*` tables until this service boots and creates
+them. That is the intended order, not a gap.
+
+The mapping *rows* are maintained from a queue that lives here too: an unrecognised vendor id lands
+in `live_unmatched` with `reason='edition_unmapped'`, a human adds a line to the file, and the next
+deploy applies it.
 
 `device_push_tokens` is the one exception in the table above: it was **not** carried over, because
 tennis-data-storage already has `push_tokens` with `push_token_kind_t` containing
@@ -107,11 +125,25 @@ suite is still green — see the warning in `CLAUDE.md`.
 
 ## Things that will bite
 
-- **A schema change here is a cross-repo PR.** There are no migrations in this repo. Editing
-  `db/*.sql` changes nothing anywhere until it is applied locally *and* carried over.
-- **`create table if not exists` hides edits.** Changing a table definition in a file that has
-  already been applied does nothing to an existing database. Either write the `alter`, or drop and
-  rebuild.
+- **A schema change here ships with the deploy.** Editing `db/*.sql` changes nothing until the
+  service restarts and the applier runs — and then only if the change is additive (see below).
+- **This is a bootstrap, not a migration tool — know the difference.** There is no ledger, no
+  ordering guarantee beyond the fixed file list, no rollback and no drift detection. It re-runs
+  everything every boot and relies on idempotency. It behaves like a migration exactly once.
+- **So: to change a table, append an idempotent `alter`; never edit the `create`.** Editing a
+  `create table if not exists` does **nothing** to an existing database — the table exists, Postgres
+  skips it, local dev looks right because it was built fresh, and production silently keeps the old
+  shape. The working pattern is already in `db/live_push.sql`:
+
+  ```sql
+  alter table live_events add column if not exists attempts int not null default 0;
+  ```
+
+  That is idempotent *and* it mutates an existing table, so it survives the re-run.
+- **What this mechanism cannot do**, at all: rename a column, change a type, drop anything, add a
+  `not null` column without a default to a populated table, or run a backfill that isn't idempotent.
+  The first time you need one of those, reach for a real migration tool (goose, dbmate) and delete
+  the boot applier — until then it would be machinery without a job.
 - **`external_ids` is N:1 and its `entity_id` has no foreign key**, both deliberately. One entity can
   have several vendor keys — the vendor carries split identities for the same player, and different
   tours and draws of one tournament are different ids (`US Open`: 1217 atp, 1218 wta, 1221 doubles).

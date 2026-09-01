@@ -1,5 +1,5 @@
 -- Схема доставки пушей Live Activity (Task 2).
--- Канонические DDL живут в tennis-data-storage; здесь рабочая копия.
+-- Владелец — этот сервис; см. db/live_ingest.sql про разделение владения.
 --
 --   docker exec -i tennis-pg psql -U tennis -d tennis -v ON_ERROR_STOP=1 < db/live_push.sql
 

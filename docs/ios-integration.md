@@ -212,9 +212,13 @@ the real count.
 
 ## 7. Two things to confirm
 
-- **`/v1/matches` returns `"live": {}` for a live match, not `null`.** The column is `NOT NULL`
-  defaulted to `{}`, so the moment a match is live the key appears as an empty object. Nothing writes
-  into it. Worth knowing before anything renders it.
+- **`/v1/matches` may return a real object in `live` for a live match.** The key is always present:
+  `null` for a completed match, and for a live one either `{}` or something like
+  `{"score": …}`. **Correction to an earlier version of this doc, which said it is always `{}`** —
+  that was measured on a local database where nothing writes the column. The content pipeline
+  (`migrate_data.py`) sets `status='live'` from its own `isLive` flag and puts its scraped
+  `liveScore` into `live_state`, so on production the field can carry a score. This ingester never
+  writes it. Decode it as an optional, free-form object and don't assume it's empty.
 - **How many concurrent cards do you want to show?** `LIVE_MATCHES_LIMIT` is a safety fuse, not a
   product cap; the client decides how many activities to hold. During a slam, a user following twenty
   players can easily have more than five matches live at once.
