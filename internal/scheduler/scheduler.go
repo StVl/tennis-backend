@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -62,6 +63,18 @@ func (s *Scheduler) Register(jobs []Job) error {
 // проверить тестом: cron без WithSeconds() умеет только минутную гранулярность,
 // то есть через планировщик такой тест ждал бы минуту.
 func (s *Scheduler) runOnce(u updater.Updater, timeout time.Duration) {
+	// cron.New() ставит ПУСТУЮ цепочку: в v3 автоматический Recover убрали, а
+	// джоб запускается в голой горутине, у которой единственный defer — учёт
+	// в jobWaiter. Без этого паника в разборе чужого JSON уносит весь процесс,
+	// а на Railway это цикл перезапусков, причём каждый заново применяет схему.
+	// Плохой ответ вендора должен стоить один прогон, а не сервис.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("scheduled update panicked", "updater", u.Name(),
+				"panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+
 	// уже выключаемся — новый прогон не начинаем, чтобы не шуметь в логах
 	// ошибками отменённого контекста
 	if s.rootCtx.Err() != nil {

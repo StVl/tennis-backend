@@ -41,7 +41,15 @@ func run() error {
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
 
-	pool, err := storage.NewPool(rootCtx, cfg.DatabaseURL, cfg.DBMaxConns)
+	// Дедлайн на подключение: NewPool сразу пингует, а ни в DSN, ни в pgxpool
+	// таймаута набора соединения нет. База, которая принимает TCP и не
+	// доводит хендшейк, иначе вешает старт здесь — без слушателя и без единой
+	// строки в логе, то есть ровно так же, как ниже вешало применение схемы.
+	// Ошибка — это нормально (os.Exit(1), Railway перезапустит); вечное
+	// ожидание — нет.
+	poolCtx, cancelPool := context.WithTimeout(rootCtx, 10*time.Second)
+	pool, err := storage.NewPool(poolCtx, cfg.DatabaseURL, cfg.DBMaxConns)
+	cancelPool()
 	if err != nil {
 		return err
 	}
@@ -54,9 +62,20 @@ func run() error {
 		schema, err := livedb.Files()
 		if err != nil {
 			slog.Error("live schema: reading embedded files failed", "error", err)
-		} else if err := storage.ApplyLiveSchema(rootCtx, pool, toSchemaFiles(schema)); err != nil {
-			slog.Error("live schema: not applied; live endpoints will fail until it is",
-				"error", err)
+		} else {
+			// Свой дедлайн, а не rootCtx: применение стоит ДО ListenAndServe,
+			// поэтому затянувшийся шаг задерживает не live-фичу, а весь старт.
+			//
+			// 45s — с запасом к худшему случаю самого применения: четыре файла
+			// по две попытки с lock_timeout=3s и паузой 2s дают 32s. Дедлайн
+			// здесь страховка от того, чего lock_timeout не покрывает; обычный
+			// старт укладывается в единицы миллисекунд.
+			applyCtx, cancel := context.WithTimeout(rootCtx, 45*time.Second)
+			if err := storage.ApplyLiveSchema(applyCtx, pool, toSchemaFiles(schema)); err != nil {
+				slog.Error("live schema: not applied; live endpoints will fail until it is",
+					"error", err)
+			}
+			cancel()
 		}
 	}
 

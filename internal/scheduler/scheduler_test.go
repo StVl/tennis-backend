@@ -15,6 +15,7 @@ type fakeUpdater struct {
 	gotCtx  context.Context
 	block   bool
 	blocked chan struct{}
+	panics  bool
 }
 
 func (f *fakeUpdater) Name() string { return f.name }
@@ -22,6 +23,9 @@ func (f *fakeUpdater) Name() string { return f.name }
 func (f *fakeUpdater) Update(ctx context.Context) error {
 	f.calls++
 	f.gotCtx = ctx
+	if f.panics {
+		panic("нарочно: неожиданный ответ вендора")
+	}
 	if !f.block {
 		return nil
 	}
@@ -106,5 +110,29 @@ func TestCancelledRootSkipsRun(t *testing.T) {
 
 	if u.calls != 0 {
 		t.Fatalf("вызовов %d, ожидалось 0: при выключении новый прогон не начинаем", u.calls)
+	}
+}
+
+// Паника в джобе не должна уносить процесс. cron.New() ставит ПУСТУЮ цепочку —
+// в v3 автоматический Recover убрали, — и джоб бежит в голой горутине, поэтому
+// без recover'а в runOnce одна плохая строка от вендора означала бы цикл
+// перезапусков на Railway. Без этого теста защиту тихо снимет любой рефакторинг:
+// панику видно только когда она случается.
+func TestRunOnceRecoversPanic(t *testing.T) {
+	s := New(context.Background(), time.Minute)
+	panicky := &fakeUpdater{name: "panicky", panics: true}
+
+	// если recover'а нет, эта строка валит весь тестовый бинарь
+	s.runOnce(panicky, time.Second)
+
+	if panicky.calls != 1 {
+		t.Fatalf("вызовов %d, ожидалось 1", panicky.calls)
+	}
+
+	// планировщик остался годен: следующий прогон идёт как обычно
+	healthy := &fakeUpdater{name: "healthy"}
+	s.runOnce(healthy, time.Second)
+	if healthy.calls != 1 {
+		t.Fatalf("после паники прогонов %d, ожидался 1", healthy.calls)
 	}
 }

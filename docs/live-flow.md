@@ -44,6 +44,13 @@ flowchart LR
 idempotent, under an advisory lock) → jobs registered → HTTP server. A schema failure is logged, not
 fatal: it breaks the live feature only.
 
+Every step before the HTTP listener is time-bounded, because a hang there stalls the whole API and not
+just the live feature: 10s on the pool connect, 45s on the apply, and `lock_timeout = 3s` on the
+applier's connection — four tables across two files reference `matches(id)`, so the DDL waits on a lock
+the content pipeline holds whenever it is mid-batch. A file that loses that race is retried once and
+then **skipped, not fatal to the rest**: the four files are independent and idempotent, so the next boot
+finishes the job. A boot that applied nothing still serves traffic, and says so once per failed file.
+
 ---
 
 ## Job A — `live-schedule`
@@ -116,8 +123,13 @@ flowchart TD
 and all of it must work when polling is off — quota exhausted, vendor down, kill switch pulled.
 
 - `OrphanFlags` → a flag whose match is no longer `live` (the pipeline took the row) → `FlipOut`
-- `UnflaggedLiveMatches` → a match `live` with no flag of ours → **logged loudly, never adopted**;
-  restoring a `prior_status` we never recorded would be a guess
+- `UnflaggedLiveMatches` → a match `live` with no flag of ours → **logged, never adopted**;
+  restoring a `prior_status` we never recorded would be a guess. At `WARN`, not `ERROR`, and **only
+  when the set of ids changes** — in a shared database this is the normal state, because the content
+  pipeline sets `status='live'` from its own `isLive`, and at `ERROR` on every tick it was 288
+  guaranteed-false alarms a day. The id list is capped at `maxLoggedMatchIDs`; `count` stays exact. A
+  stable set therefore produces **one line per process lifetime**, so grepping a recent window can
+  come back empty while the condition holds — query `matches`/`live_flags` instead of trusting the log
 - `RetireCreatedMatches` → our own stale `scheduled` rows → `cancelled`
 - `StaleFlags` → anything held live longer than `LIVE_MAX_LIVE_AGE` (6h) → forced out
 
@@ -334,6 +346,6 @@ Break any of these and the failure is quiet:
 | no cards at all | `live_ingest_runs.mode` — stuck `asleep` means no windows; `live_schedule` empty means Job A hasn't run |
 | `rows_matched = 0` while matches are live | `live_unmatched.reason` — `no_match_row` means our row has a NULL `scheduled_at` or ≠2 participants |
 | a card that won't go away | `live_flags` — `flipped_at` older than `LIVE_MAX_LIVE_AGE` should be force-exited by `reconcile` |
-| a match live that we never flipped | the `UnflaggedLiveMatches` warning — the content pipeline also sets `status='live'` from its own `isLive` |
+| a match live that we never flipped | `select m.id from matches m where m.status='live' and not exists (select 1 from live_flags f where f.match_id=m.id)` — the content pipeline also sets `status='live'` from its own `isLive`. Query it rather than grepping: the `UnflaggedLiveMatches` warning fires only when the id set changes, so a stable one is logged once per process |
 | quota gone by midday | `select sum(requests_made) … group by mode` — `stale_safe` spending means Job A is failing |
 | pushes not arriving | `live_events` where `consumed_at is null` and `attempts >= PUSH_MAX_ATTEMPTS`, plus `last_error` |
