@@ -54,9 +54,15 @@ func run() error {
 		schema, err := livedb.Files()
 		if err != nil {
 			slog.Error("live schema: reading embedded files failed", "error", err)
-		} else if err := storage.ApplyLiveSchema(rootCtx, pool, toSchemaFiles(schema)); err != nil {
-			slog.Error("live schema: not applied; live endpoints will fail until it is",
-				"error", err)
+		} else {
+			// Свой дедлайн, а не rootCtx: применение стоит ДО ListenAndServe,
+			// поэтому затянувшийся шаг задерживает не live-фичу, а весь старт.
+			applyCtx, cancel := context.WithTimeout(rootCtx, 30*time.Second)
+			if err := storage.ApplyLiveSchema(applyCtx, pool, toSchemaFiles(schema)); err != nil {
+				slog.Error("live schema: not applied; live endpoints will fail until it is",
+					"error", err)
+			}
+			cancel()
 		}
 	}
 

@@ -57,6 +57,26 @@ func ApplyLiveSchema(ctx context.Context, pool *pgxpool.Pool, schema []SchemaFil
 		}
 	}()
 
+	// lock_timeout по умолчанию БЕСКОНЕЧЕН, а DDL здесь берёт лок на matches:
+	// три таблицы ссылаются на неё внешним ключом. Если пайплайн контента
+	// держит на matches транзакцию, старт встаёт насовсем — причём HTTP-слушатель
+	// поднимается ПОСЛЕ этого вызова, то есть висит весь сервис, а не только
+	// live-фича. С ограничением спорный старт сваливается в уже задуманное
+	// поведение: залогировать и продолжить.
+	//
+	// Снимается в defer: соединение уходит обратно в пул, и оставленный на нём
+	// lock_timeout ронял бы по таймауту чужие запросы.
+	if _, err := conn.Exec(ctx, `set lock_timeout = '3s'`); err != nil {
+		return fmt.Errorf("set lock_timeout: %w", err)
+	}
+	defer func() {
+		resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(resetCtx, `set lock_timeout = default`); err != nil {
+			slog.Warn("live schema: resetting lock_timeout failed", "error", err)
+		}
+	}()
+
 	for _, f := range schema {
 		started := time.Now()
 		if _, err := conn.Exec(ctx, f.SQL); err != nil {
