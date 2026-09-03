@@ -24,10 +24,66 @@ import (
 )
 
 func main() {
+	setupLogging()
 	if err := run(); err != nil {
 		slog.Error("application failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// setupLogging переключает slog на JSON в stdout.
+//
+// По умолчанию slog пишет ТЕКСТ в STDERR — и то и другое здесь неверно.
+// Railway помечает ошибкой всё, что пришло в stderr, независимо от уровня,
+// поэтому INFO-строки планировщика (около 3700 в сутки, из них 2880 — тики
+// выключенного пушера) выглядели в дашборде как поток ошибок, а настоящую
+// ошибку среди них было не отличить: рубильник severity бесполезен, когда
+// красное вообще всё. Текстовый формат ту же проблему закрепляет — уровень
+// лежит внутри строки, и разобрать его платформе нечем.
+//
+// JSON в stdout Railway разбирает сам и берёт уровень из поля level.
+//
+// Вызывается ПЕРВЫМ, до config.Load: конфиг сам предупреждает о битых
+// переменных (envBool и соседи молча берут значение по умолчанию), и эти
+// предупреждения должны попасть в тот же формат, иначе теряется ровно тот
+// случай, когда оператор думает, что переменную выставил.
+//
+// HTTP-строки идут не отсюда: chi middleware.Logger пишет своим text-логгером
+// в stdout, то есть остаётся текстом рядом с JSON. Красными они и не были.
+func setupLogging() {
+	level, malformed := logLevel()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			// JSON-обработчик рендерит time.Duration наносекундами:
+			// "took":868875 вместо took=868.875µs. Читаемость — это ровно то,
+			// зачем здесь всё остальное, так что возвращаем строку.
+			if a.Value.Kind() == slog.KindDuration {
+				a.Value = slog.StringValue(a.Value.Duration().String())
+			}
+			return a
+		},
+	})))
+	if malformed != "" {
+		// Не молча: иначе оператор считает, что уровень прикручен, а лог тот же.
+		slog.Warn("malformed LOG_LEVEL, using info", "value", malformed)
+	}
+}
+
+// logLevel читает LOG_LEVEL напрямую, а не через internal/config: конфиг
+// парсится позже и логирует в процессе, а уровень нужен до этого. Возвращает
+// вторым значением непонятое значение, чтобы предупредить о нём уже новым
+// обработчиком.
+func logLevel() (slog.Level, string) {
+	raw := os.Getenv("LOG_LEVEL")
+	if raw == "" {
+		return slog.LevelInfo, ""
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(raw)); err != nil {
+		return slog.LevelInfo, raw
+	}
+	return level, ""
 }
 
 func run() error {
