@@ -78,7 +78,7 @@ be downloaded once). Then send us four things:
 
 | We set | What it is |
 |---|---|
-| `APNS_KEY_PATH` | the `.p8` file itself — never in git, never in a chat log |
+| `APNS_KEY_BASE64` | the `.p8` contents, base64-encoded — this is how it reaches Railway |
 | `APNS_KEY_ID` | the key's ID, 10 characters |
 | `APNS_TEAM_ID` | the team ID, 10 characters |
 | `APNS_BUNDLE_ID` | the app's bundle identifier |

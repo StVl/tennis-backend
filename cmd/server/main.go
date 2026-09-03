@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -237,9 +239,9 @@ func newPushSender(cfg config.PushConfig) (live.Sender, error) {
 	if !cfg.Enabled {
 		return disabledSender{}, nil
 	}
-	key, err := os.ReadFile(cfg.KeyPath)
+	key, err := apnsKey(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("read APNS_KEY_PATH: %w", err)
+		return nil, err
 	}
 	return apns.New(apns.Config{
 		KeyID: cfg.KeyID, TeamID: cfg.TeamID, BundleID: cfg.BundleID,
@@ -289,4 +291,25 @@ func toSchemaFiles(in []livedb.File) []storage.SchemaFile {
 		out = append(out, storage.SchemaFile{Name: f.Name, SQL: f.SQL})
 	}
 	return out
+}
+
+// apnsKey отдаёт содержимое .p8. base64 из переменной приоритетнее файла:
+// на Railway файл положить некуда, а в base64 нет переводов строк, которые
+// иначе теряются при передаче ключа через окружение.
+func apnsKey(cfg config.PushConfig) ([]byte, error) {
+	if cfg.KeyBase64 != "" {
+		// Whitespace: ключ часто копируют через терминал, и base64 приезжает
+		// с переносами. StdEncoding их не терпит, поэтому чистим сами.
+		clean := strings.Join(strings.Fields(cfg.KeyBase64), "")
+		key, err := base64.StdEncoding.DecodeString(clean)
+		if err != nil {
+			return nil, fmt.Errorf("decode APNS_KEY_BASE64: %w", err)
+		}
+		return key, nil
+	}
+	key, err := os.ReadFile(cfg.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read APNS_KEY_PATH: %w", err)
+	}
+	return key, nil
 }
