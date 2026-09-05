@@ -1,9 +1,12 @@
 # What the iOS side has to do
 
-The backend half of the Live Activity is finished: it detects when a followed player walks on court,
-flips `matches.status`, and pushes to APNs. It flips the `scheduled` match rows the content pipeline
-already publishes — no new rows, no writes outside that one column. Nothing reaches a lock screen
-until the seven steps below are done, and four of them are things only the client can supply.
+The backend half of the Live Activity is **deployed and running in production**: it polls the vendor,
+flips `matches.status` on the `scheduled` rows the content pipeline already publishes, and pushes to
+APNs. No new match rows, no writes outside that one column. Nothing reaches a lock screen until the
+seven steps below are done, and four of them are things only the client can supply.
+
+**You can start now on steps 2, 3 and 6 without waiting for anything from us** — see *Testing* at the
+bottom for how to drive the whole lifecycle locally, on demand, with no vendor API involved.
 
 Counterpart to [`live-activity-handoff.md`](live-activity-handoff.md), which is the same conversation
 in the other direction.
@@ -18,6 +21,9 @@ in the other direction.
 | 5 | Send us each activity's own token | ending a card by push | endpoint live |
 | 6 | Reconcile on launch | stale cards after an outage | endpoint live |
 | 7 | Confirm two wire details | nothing, but cheap to get wrong | — |
+
+Plus one behaviour to build around rather than a step: **a match can be live without a card** — see
+that section below, between steps 6 and 7.
 
 Everything under `/v1/users/me/*` needs `Authorization: Bearer tt_…`, minted once by
 `POST /v1/users` and kept in the Keychain. That already works and the app already uses it.
@@ -73,12 +79,20 @@ insert-only, and cancelled automatically 48h after their start time if they neve
 
 ## 1. The APNs key
 
-In the Apple Developer account, create a **Key** with APNs enabled and download the `.p8` (it can only
-be downloaded once). Then send us four things:
+In the Apple Developer account: **Certificates, Identifiers & Profiles → Keys → + →** tick **Apple
+Push Notifications service (APNs) →** Register → Download. You get `AuthKey_XXXXXXXXXX.p8`, and it
+downloads **exactly once** — lose it and you revoke and create a new one. Keep it in a password
+manager, not in Downloads, and never in git.
+
+Then convert and send us four values:
+
+```bash
+base64 -i AuthKey_XXXXXXXXXX.p8 | tr -d '\n'
+```
 
 | We set | What it is |
 |---|---|
-| `APNS_KEY_PATH` | the `.p8` file itself — never in git, never in a chat log |
+| `APNS_KEY_BASE64` | the `.p8` contents, base64-encoded — this is how it reaches Railway |
 | `APNS_KEY_ID` | the key's ID, 10 characters |
 | `APNS_TEAM_ID` | the team ID, 10 characters |
 | `APNS_BUNDLE_ID` | the app's bundle identifier |
@@ -210,6 +224,29 @@ Dismiss any activity whose match is **not** in `items`. Each item carries `id`, 
 (`LIVE_MATCHES_LIMIT`, default 50), so absence from `items` does *not* mean the match ended. `total` is
 the real count.
 
+## A match can be live without a card
+
+Worth building around, because it is not an edge case. **Two systems write `matches.status = 'live'`:**
+this ingester, from the vendor's board, and the content pipeline, from its own `isLive` flag in the
+data shards.
+
+Only the ingester's flips emit a transition event, so only they produce a push. A match the pipeline
+marks live gets `is_live: true` in the widget, appears in `GET /v1/matches?status=live`, and shows up
+in `GET /v1/users/me/live-matches` — with **no Live Activity**, because nothing pushed.
+
+So do not treat "live in the app" as "a card exists", in either direction:
+
+- a match may be live with no card (the pipeline flagged it);
+- a card is only ever started by a push, and only ever ended by a push or by your reconciliation.
+
+`GET /v1/users/me/live-matches` is the source of truth for *what is live*. Your own list of running
+activities is the source of truth for *what has a card*. Reconciliation (step 6) is where the two
+meet: dismiss activities whose match is absent, and don't try to synthesise a card for a live match
+that never pushed.
+
+Which system owns the live flag is an open question on our side. Until it is settled, expect coverage
+to be partial rather than complete.
+
 ## 7. Two things to confirm
 
 - **`/v1/matches` may return a real object in `live` for a live match.** The key is always present:
@@ -227,8 +264,9 @@ the real count.
 
 ## Testing without waiting for real tennis
 
-With `DEV_ENDPOINTS_ENABLED=true` the backend exposes hand triggers, so the full lifecycle can be
-driven on demand:
+**In production these are off** (`DEV_ENDPOINTS_ENABLED=false`), so testing against the deployed
+backend means waiting for a tracked player to actually walk on court. For a fast loop, run the backend
+locally with `DEV_ENDPOINTS_ENABLED=true` — then the full lifecycle is driven on demand:
 
 | | |
 |---|---|

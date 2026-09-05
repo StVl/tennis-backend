@@ -70,9 +70,16 @@ type PushConfig struct {
 	KeyID    string
 	TeamID   string
 	BundleID string
-	// Путь к .p8. Файл, а не содержимое в переменной: ключ многострочный, и
-	// переносы в env переживают не всякий деплой.
-	KeyPath string
+	// .p8 задаётся ОДНИМ из двух способов, и KeyBase64 имеет приоритет.
+	//
+	// KeyPath — для локальной работы: файл лежит рядом, в репозиторий не
+	// попадает. На Railway положить файл некуда: единственное место, которое
+	// попадает в образ, — сам репозиторий, а приватный ключ туда нельзя.
+	// Поэтому KeyBase64 — содержимое .p8 в base64. Именно base64, а не PEM
+	// как есть: перевод строки в переменной окружения переживает не всякий
+	// деплой, а внутри base64 переносов нет вовсе.
+	KeyPath   string
+	KeyBase64 string
 	// Хост Apple. Токен sandbox на боевом хосте даёт BadDeviceToken, причём
 	// сообщение об этом ни на что не указывает.
 	Host string
@@ -97,6 +104,7 @@ func loadPush() (PushConfig, error) {
 		TeamID:         os.Getenv("APNS_TEAM_ID"),
 		BundleID:       os.Getenv("APNS_BUNDLE_ID"),
 		KeyPath:        os.Getenv("APNS_KEY_PATH"),
+		KeyBase64:      os.Getenv("APNS_KEY_BASE64"),
 		Host:           envOrDefault("APNS_HOST", "https://api.sandbox.push.apple.com"),
 		AttributesType: envOrDefault("APNS_ATTRIBUTES_TYPE", "MatchActivityAttributes"),
 		BatchSize:      envInt("PUSH_BATCH_SIZE", 50),
@@ -111,11 +119,15 @@ func loadPush() (PushConfig, error) {
 	}
 	for name, v := range map[string]string{
 		"APNS_KEY_ID": c.KeyID, "APNS_TEAM_ID": c.TeamID,
-		"APNS_BUNDLE_ID": c.BundleID, "APNS_KEY_PATH": c.KeyPath,
+		"APNS_BUNDLE_ID": c.BundleID,
 	} {
 		if v == "" {
 			return c, fmt.Errorf("%s is required when PUSH_ENABLED is true", name)
 		}
+	}
+	if c.KeyBase64 == "" && c.KeyPath == "" {
+		return c, fmt.Errorf(
+			"either APNS_KEY_BASE64 or APNS_KEY_PATH is required when PUSH_ENABLED is true")
 	}
 	if _, err := cron.ParseStandard(c.Cron); err != nil {
 		return c, fmt.Errorf("parse PUSH_CRON: %w", err)
