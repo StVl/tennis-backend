@@ -75,8 +75,11 @@ in those hours.
 8. `UpsertSchedule` — upsert plus GC in **one transaction**. Never delete-then-insert: a half-fetched
    schedule would put Job B to sleep for eight hours with no error anywhere.
 9. If `LIVE_CREATE_MATCHES` → `createMatches` (see below). Off by default.
-10. `PruneLiveTables` — retention: observations 30d, runs 14d, consumed events 7d, unmatched 90d.
-    Unconsumed events are never touched.
+10. `PruneLiveTables` — retention: observations 30d, runs 14d, consumed events 7d, unmatched 90d,
+    ended Live Activity sessions 7d. Unconsumed events and still-open sessions are never touched —
+    an unconsumed event is a push nobody has delivered yet, and a session with `ended_at is null` is
+    a card on someone's lock screen right now, whose row is also the slot that stops a second
+    push-to-start for the same match.
 11. `reconcileQuota` — `GET /usage`, comparing our arithmetic against the vendor's own count. Our day
     boundary is UTC by assumption; if theirs differs the governor is wrong for part of every day.
 12. `FinishRun` — on a context detached from the cycle timeout, so a timeout can't lose the row.
