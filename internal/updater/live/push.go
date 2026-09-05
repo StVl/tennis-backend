@@ -112,12 +112,12 @@ func (u *PushUpdater) pushStart(ctx context.Context, e storage.LiveEvent,
 	// всему накопленному хвосту: матчи давно сыграны, а погасить карточку
 	// нечем — update_token приходит только от уже запущенной активности.
 	// Событие при этом считается разобранным: повторять его смысла нет.
-	live, err := storage.MatchStillLive(ctx, u.pool, e.MatchID)
+	live, err := storage.MatchStillLive(ctx, u.pool, e.MatchID, e.CreatedAt)
 	if err != nil {
 		return sent, fmt.Errorf("re-check match state: %w", err)
 	}
 	if !live {
-		slog.Info("live-push: skipping a start push, the match is no longer live",
+		slog.Info("live-push: skipping a start push, the match is not live for this event",
 			"match_id", e.MatchID, "event_id", e.ID, "event_age", now.Sub(e.CreatedAt))
 		return sent, nil
 	}

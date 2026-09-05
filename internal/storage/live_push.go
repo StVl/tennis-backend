@@ -57,14 +57,30 @@ type LiveEvent struct {
 //
 // Флаг проверяется вместе со статусом намеренно: status='live' без нашего
 // флага ставит пайплайн контента, и поднимать по нему карточку мы не вправе.
-func MatchStillLive(ctx context.Context, pool *pgxpool.Pool, matchID int64) (bool, error) {
+//
+// eventAt привязывает проверку к ТОМУ ЖЕ периоду live, что и событие, и без
+// него защита дырявая. Матч может сходить live -> finished -> live ещё раз
+// (Derive пускает обратно без паузы, а FlipOut возвращает 'scheduled', так что
+// guard FlipLive снова пропускает). Тогда в очереди лежат live(1), finished(2),
+// live(3), и матч идёт ПРЯМО СЕЙЧАС: на вопрос «жив ли матч» все три отвечают
+// «да». Пушер поднял бы карточку по live(1), закрыл её по finished(2) без
+// пуша (update_token ещё не пришёл) и поднял вторую по live(3) — две карточки
+// на один матч, причём первую погасить уже нечем: её сессия закрыта, и
+// sweepStale её не видит (он смотрит ended_at is null).
+//
+// FlipLive пишет flag.flipped_at и live_events.created_at из ОДНОГО значения,
+// поэтому у события своего периода они равны, а у события прошлого периода
+// created_at строго меньше нового flipped_at.
+func MatchStillLive(ctx context.Context, pool *pgxpool.Pool, matchID int64,
+	eventAt time.Time) (bool, error) {
+
 	var live bool
 	err := pool.QueryRow(ctx, `
 		select exists (
 			select 1 from matches m
 			join live_flags f on f.match_id = m.id
-			where m.id = $1 and m.status = 'live')`,
-		matchID).Scan(&live)
+			where m.id = $1 and m.status = 'live' and f.flipped_at <= $2)`,
+		matchID, eventAt).Scan(&live)
 	return live, err
 }
 
