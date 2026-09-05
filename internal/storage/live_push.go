@@ -142,9 +142,22 @@ type PushTarget struct {
 // Подписка на ОБОИХ игроков даёт одну строку: distinct по пользователю, а не
 // join, иначе человек получит две карточки на один матч. Уже открытая сессия
 // исключается — второй push-to-start это дубль на локскрине.
+//
+// distinct on (user_id) с сортировкой по updated_at desc — СВЕЖИЙ токен, а не
+// произвольный. У пользователя их бывает несколько: ключ device_push_tokens —
+// (user_id, token), поэтому СМЕНИВШИЙСЯ токен добавляет строку, а не заменяет
+// старую, а удаляется мёртвый только по 410 от Apple.
+//
+// Раньше сортировка шла по одному user_id, то есть между токенами ОДНОГО
+// пользователя порядок был не определён. Больше одной карточки всё равно не
+// уходит — слот сессии занимается до отправки, — так что выбор был
+// произвольным: выпадал протухший токен, он забирал слот, Apple отвечала 410,
+// и пользователь оставался без карточки на этот матч. Самоизлечивается к
+// следующему матчу (мёртвый токен к тому моменту удалён), но одну карточку
+// стоило.
 func StartAudience(ctx context.Context, pool *pgxpool.Pool, matchID int64) ([]PushTarget, error) {
 	rows, err := pool.Query(ctx, `
-		select distinct t.user_id::text, t.token, t.env
+		select distinct on (t.user_id) t.user_id::text, t.token, t.env
 		from device_push_tokens t
 		where exists (
 			select 1 from follows f
@@ -155,7 +168,7 @@ func StartAudience(ctx context.Context, pool *pgxpool.Pool, matchID int64) ([]Pu
 			select 1 from live_activity_sessions s
 			where s.user_id = t.user_id and s.match_id = $1 and s.ended_at is null
 		)
-		order by t.user_id::text`,
+		order by t.user_id, t.updated_at desc`,
 		matchID)
 	if err != nil {
 		return nil, err

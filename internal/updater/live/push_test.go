@@ -579,3 +579,46 @@ func TestReflippedMatchRaisesOnlyOneCard(t *testing.T) {
 			"карточка, которую уже нечем погасить", total, open)
 	}
 }
+
+// У пользователя два токена: протухший и свежий. Карточка ОДНА, и уходит на
+// свежий.
+//
+// Несколько токенов у одного пользователя — норма, а не патология: ключ
+// device_push_tokens это (user_id, token), поэтому сменившийся токен добавляет
+// строку, а не заменяет старую, и мёртвая удаляется только по 410 от Apple.
+// Слот сессии занимается до отправки, так что уходит РОВНО одна карточка — и
+// без сортировки по updated_at выбор между токенами был произвольным: выпадал
+// протухший, забирал слот, и пользователь оставался без карточки на этот матч.
+func TestStartAudiencePrefersTheFreshestToken(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	userID := pushEnv(t, pool, fm.id)
+	ctx := context.Background()
+
+	// pushEnv уже записал один токен; состарим его и добавим свежий
+	if _, err := pool.Exec(ctx,
+		`update device_push_tokens set updated_at = now() - interval '30 days' where user_id = $1`,
+		userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.UpsertPushToken(ctx, pool, userID, "tok-fresh-"+userID, "sandbox",
+		time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	emitEvent(t, pool, fm.id, storage.LiveEventLive)
+	sender := &fakeSender{}
+	if err := NewPush(pool, sender, pushCfg()).Update(ctx); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	starts := sender.byType(apns.PushStart)
+	if len(starts) != 1 {
+		t.Fatalf("push-to-start %d, ожидался 1: слот сессии допускает только одну карточку", len(starts))
+	}
+	if starts[0].Token != "tok-fresh-"+userID {
+		t.Errorf("карточка ушла на %q, ожидался свежий токен: протухший забрал бы слот, "+
+			"Apple ответила бы 410, и пользователь остался бы без карточки", starts[0].Token)
+	}
+}
