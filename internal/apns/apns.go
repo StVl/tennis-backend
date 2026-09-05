@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -140,7 +141,11 @@ func (c *Client) Send(ctx context.Context, n Notification) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.cfg.Host+"/3/device/"+n.Token, bytes.NewReader(body))
 	if err != nil {
-		return err
+		// Тот же *url.Error, что и ниже: url.Parse возвращает его с полным
+		// адресом. Токен приходит от клиента как есть (валидации на длину и
+		// hex нигде нет), поэтому '%' или управляющий символ в нём роняет
+		// разбор — и печатает токен в лог.
+		return redactURL(err)
 	}
 	req.Header.Set("authorization", "bearer "+jwt)
 	req.Header.Set("apns-push-type", "liveactivity")
@@ -155,7 +160,7 @@ func (c *Client) Send(ctx context.Context, n Notification) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("apns: %w", err)
+		return redactURL(err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
@@ -222,3 +227,20 @@ func (c *Client) invalidateAuthToken() {
 }
 
 func b64(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+
+// redactURL убирает адрес из ошибки, оставляя причину.
+//
+// И net/url, и http.Client заворачивают сбои в *url.Error, а он печатает URL
+// целиком — а наш URL это /3/device/<token>. Без этого токен устройства попадал
+// бы в лог на каждом сетевом сбое и жил там весь срок хранения логов; вместе с
+// .p8 этого достаточно, чтобы слать карточки на чужое устройство.
+//
+// Op сохраняется («Post», «parse»): он отличает сбой отправки от сбоя разбора
+// адреса, а токена в себе не несёт.
+func redactURL(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("apns: %s: %w", urlErr.Op, urlErr.Err)
+	}
+	return fmt.Errorf("apns: %w", err)
+}

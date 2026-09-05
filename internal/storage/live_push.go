@@ -40,6 +40,48 @@ type LiveEvent struct {
 	MatchID  int64
 	Event    string
 	Attempts int
+	// Когда переход случился. Нужен не для отправки, а чтобы отказ от
+	// протухшего события было видно в логе с его возрастом.
+	CreatedAt time.Time
+}
+
+// MatchStillLive — идёт ли матч прямо сейчас И держим ли его live мы.
+//
+// Проверяется перед стартовым пушем, а не только в момент записи события.
+// Между FlipLive и разбором очереди проходит до минуты, а при выключенном
+// пушере — сколько угодно: retention удаляет только ПОТРЕБЛЁННЫЕ события
+// (см. PruneLiveTables), поэтому непрочитанные копятся вечно. Без этой
+// проверки включение PUSH_ENABLED поднимало бы карточки по всему накопленному
+// хвосту — для матчей, которые кончились часы назад, — и погасить их было бы
+// нечем: update_token у такой карточки ещё не существует.
+//
+// Флаг проверяется вместе со статусом намеренно: status='live' без нашего
+// флага ставит пайплайн контента, и поднимать по нему карточку мы не вправе.
+//
+// eventAt привязывает проверку к ТОМУ ЖЕ периоду live, что и событие, и без
+// него защита дырявая. Матч может сходить live -> finished -> live ещё раз
+// (Derive пускает обратно без паузы, а FlipOut возвращает 'scheduled', так что
+// guard FlipLive снова пропускает). Тогда в очереди лежат live(1), finished(2),
+// live(3), и матч идёт ПРЯМО СЕЙЧАС: на вопрос «жив ли матч» все три отвечают
+// «да». Пушер поднял бы карточку по live(1), закрыл её по finished(2) без
+// пуша (update_token ещё не пришёл) и поднял вторую по live(3) — две карточки
+// на один матч, причём первую погасить уже нечем: её сессия закрыта, и
+// sweepStale её не видит (он смотрит ended_at is null).
+//
+// FlipLive пишет flag.flipped_at и live_events.created_at из ОДНОГО значения,
+// поэтому у события своего периода они равны, а у события прошлого периода
+// created_at строго меньше нового flipped_at.
+func MatchStillLive(ctx context.Context, pool *pgxpool.Pool, matchID int64,
+	eventAt time.Time) (bool, error) {
+
+	var live bool
+	err := pool.QueryRow(ctx, `
+		select exists (
+			select 1 from matches m
+			join live_flags f on f.match_id = m.id
+			where m.id = $1 and m.status = 'live' and f.flipped_at <= $2)`,
+		matchID, eventAt).Scan(&live)
+	return live, err
 }
 
 // ClaimLiveEvents забирает пачку необработанных событий.
@@ -62,14 +104,14 @@ func ClaimLiveEvents(ctx context.Context, pool *pgxpool.Pool, limit, maxAttempts
 			limit $1
 			for update skip locked
 		)
-		returning id, match_id, event, attempts`,
+		returning id, match_id, event, attempts, created_at`,
 		limit, maxAttempts, at, at.Add(-retryAfter))
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (LiveEvent, error) {
 		var e LiveEvent
-		err := row.Scan(&e.ID, &e.MatchID, &e.Event, &e.Attempts)
+		err := row.Scan(&e.ID, &e.MatchID, &e.Event, &e.Attempts, &e.CreatedAt)
 		return e, err
 	})
 }
