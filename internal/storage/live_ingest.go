@@ -185,6 +185,12 @@ type RetentionPolicy struct {
 	// проходит КАЖДЫЙ push-to-start, и её сканирует sweepStale на каждом
 	// тике пушера — то есть цена роста не только в диске.
 	Sessions time.Duration
+	// Токены устройств. Ключ таблицы — (user_id, token), поэтому сменившийся
+	// токен ДОБАВЛЯЕТ строку; удаляется мёртвый только по 410 от Apple, а 410
+	// приходит лишь если мы на него отправили. Живая установка переписывает
+	// свой токен на каждом запуске, так что нетронутая строка — это удалённое
+	// приложение, восстановление из бэкапа или переустановка.
+	Tokens time.Duration
 }
 
 func DefaultRetention() RetentionPolicy {
@@ -194,6 +200,7 @@ func DefaultRetention() RetentionPolicy {
 		Events:       7 * 24 * time.Hour,
 		Unmatched:    90 * 24 * time.Hour,
 		Sessions:     7 * 24 * time.Hour,
+		Tokens:       60 * 24 * time.Hour,
 	}
 }
 
@@ -224,6 +231,12 @@ func PruneLiveTables(ctx context.Context, pool *pgxpool.Pool, now time.Time,
 		{"live_activity_sessions",
 			`delete from live_activity_sessions where ended_at is not null and ended_at < $1`,
 			p.Sessions},
+		// горизонт длинный намеренно: тут удаляется не журнал, а возможность
+		// доставить карточку. Установка, не запускавшаяся два месяца, её и так
+		// не увидит, а ошибочно удалённый токен не восстановится ничем — клиент
+		// шлёт его только при запуске.
+		{"device_push_tokens",
+			`delete from device_push_tokens where updated_at < $1`, p.Tokens},
 	} {
 		tag, err := pool.Exec(ctx, step.query, now.Add(-step.age))
 		if err != nil {
