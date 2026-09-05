@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -155,6 +156,15 @@ func (c *Client) Send(ctx context.Context, n Notification) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// URL из ошибки вырезается: http.Client заворачивает всё в *url.Error,
+		// а тот печатает адрес целиком — вместе с /3/device/<token>. Токен
+		// устройства попадал бы в лог на каждом сетевом сбое и жил там весь
+		// срок хранения; вместе с .p8 этого достаточно, чтобы слать на чужое
+		// устройство. Причина сбоя во вложенной ошибке, она и остаётся.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("apns: transport: %w", urlErr.Err)
+		}
 		return fmt.Errorf("apns: %w", err)
 	}
 	defer resp.Body.Close()
