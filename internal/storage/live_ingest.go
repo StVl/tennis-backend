@@ -179,6 +179,12 @@ type RetentionPolicy struct {
 	Runs         time.Duration
 	Events       time.Duration
 	Unmatched    time.Duration
+	// Закрытые сессии Live Activity. Единственная таблица, которая росла бы
+	// монотонно и навсегда: карточка живёт часы, а строка о ней оставалась
+	// вечно. На ней же висит частичный уникальный индекс, через который
+	// проходит КАЖДЫЙ push-to-start, и её сканирует sweepStale на каждом
+	// тике пушера — то есть цена роста не только в диске.
+	Sessions time.Duration
 }
 
 func DefaultRetention() RetentionPolicy {
@@ -187,6 +193,7 @@ func DefaultRetention() RetentionPolicy {
 		Runs:         14 * 24 * time.Hour,
 		Events:       7 * 24 * time.Hour,
 		Unmatched:    90 * 24 * time.Hour,
+		Sessions:     7 * 24 * time.Hour,
 	}
 }
 
@@ -212,6 +219,11 @@ func PruneLiveTables(ctx context.Context, pool *pgxpool.Pool, now time.Time,
 		{"live_observations", `delete from live_observations where observed_at < $1`, p.Observations},
 		{"live_ingest_runs", `delete from live_ingest_runs where started_at < $1`, p.Runs},
 		{"live_unmatched", `delete from live_unmatched where observed_at < $1`, p.Unmatched},
+		// только ЗАКРЫТЫЕ сессии: ended_at is null — это карточка, висящая на
+		// локскрине прямо сейчас, и её строка держит слот от второго старта
+		{"live_activity_sessions",
+			`delete from live_activity_sessions where ended_at is not null and ended_at < $1`,
+			p.Sessions},
 	} {
 		tag, err := pool.Exec(ctx, step.query, now.Add(-step.age))
 		if err != nil {
