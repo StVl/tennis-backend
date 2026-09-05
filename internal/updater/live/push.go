@@ -104,6 +104,24 @@ func (u *PushUpdater) Update(ctx context.Context) error {
 func (u *PushUpdater) pushStart(ctx context.Context, e storage.LiveEvent,
 	now time.Time, sent int) (int, error) {
 
+	// Матч мог кончиться, пока событие лежало в очереди. Само по себе событие —
+	// факт прошлого («тогда матч начался»), а push-to-start — утверждение о
+	// настоящем («карточку показать СЕЙЧАС»), и вот это надо перепроверять.
+	//
+	// Иначе включение PUSH_ENABLED после любого простоя рассылает карточки по
+	// всему накопленному хвосту: матчи давно сыграны, а погасить карточку
+	// нечем — update_token приходит только от уже запущенной активности.
+	// Событие при этом считается разобранным: повторять его смысла нет.
+	live, err := storage.MatchStillLive(ctx, u.pool, e.MatchID)
+	if err != nil {
+		return sent, fmt.Errorf("re-check match state: %w", err)
+	}
+	if !live {
+		slog.Info("live-push: skipping a start push, the match is no longer live",
+			"match_id", e.MatchID, "event_id", e.ID, "event_age", now.Sub(e.CreatedAt))
+		return sent, nil
+	}
+
 	targets, err := storage.StartAudience(ctx, u.pool, e.MatchID)
 	if err != nil {
 		return sent, err

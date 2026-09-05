@@ -70,9 +70,33 @@ func pushEnv(t *testing.T, pool *pgxpool.Pool, matchID int64) string {
 	return userID
 }
 
+// emitEvent кладёт событие в outbox.
+//
+// Для 'live' заодно приводит матч в состояние, которое оставляет за собой
+// FlipLive: status='live' плюс наш флаг. Это не удобство теста, а требование
+// боевого пути — событие 'live' физически не может существовать без них,
+// потому что FlipLive пишет матч, флаг и событие в ОДНОЙ транзакции. Пушер
+// это состояние перепроверяет (storage.MatchStillLive), и фикстура без него
+// проверяла бы путь, которого в проде не бывает.
 func emitEvent(t *testing.T, pool *pgxpool.Pool, matchID int64, event string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
+	ctx := context.Background()
+
+	if event == storage.LiveEventLive {
+		if _, err := pool.Exec(ctx,
+			`update matches set status = 'live' where id = $1`, matchID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			insert into live_flags (match_id, source, state, prior_status, flipped_at)
+			values ($1, $2, 'on_court', 'scheduled', now())
+			on conflict (match_id) do nothing`,
+			matchID, storage.LiveSourceAPI); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := pool.Exec(ctx, `
 		insert into live_events (match_id, event, created_at) values ($1, $2, now())`,
 		matchID, event); err != nil {
 		t.Fatal(err)
@@ -439,4 +463,59 @@ func openSessions(t *testing.T, pool *pgxpool.Pool, matchID int64) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// Накопленное событие НЕ поднимает карточку, если матч уже кончился.
+//
+// Это ровно тот случай, ради которого проверка и добавлена: при
+// PUSH_ENABLED=false события копятся неограниченно (retention удаляет только
+// потреблённые), и включение рубильника рассылало бы push-to-start по всему
+// хвосту — для матчей, сыгранных часы назад. Погасить такую карточку нечем:
+// update_token приходит только от уже запущенной активности, а её нет.
+func TestStalePushStartIsSkippedWhenMatchIsOver(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	pushEnv(t, pool, fm.id)
+	ctx := context.Background()
+
+	// матч шёл и кончился: событие в очереди осталось, флага и статуса уже нет
+	emitEvent(t, pool, fm.id, storage.LiveEventLive)
+	if _, err := pool.Exec(ctx, `delete from live_flags where match_id = $1`, fm.id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`update matches set status = 'completed' where id = $1`, fm.id); err != nil {
+		t.Fatal(err)
+	}
+
+	sender := &fakeSender{}
+	if err := NewPush(pool, sender, pushCfg()).Update(ctx); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if got := len(sender.byType(apns.PushStart)); got != 0 {
+		t.Fatalf("отправлено %d push-to-start по протухшему событию, ожидалось 0", got)
+	}
+
+	// событие разобрано, а не оставлено на повтор: матч не оживёт
+	var pending int
+	if err := pool.QueryRow(ctx,
+		`select count(*) from live_events where match_id = $1 and consumed_at is null`,
+		fm.id).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Errorf("непотреблённых событий %d, ожидалось 0: повторять протухшее событие нечем", pending)
+	}
+
+	// и слот сессии не занят — иначе настоящий старт потом не пройдёт
+	var sessions int
+	if err := pool.QueryRow(ctx,
+		`select count(*) from live_activity_sessions where match_id = $1`, fm.id).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 0 {
+		t.Errorf("сессий %d, ожидалось 0", sessions)
+	}
 }

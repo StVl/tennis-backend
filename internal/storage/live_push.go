@@ -40,6 +40,32 @@ type LiveEvent struct {
 	MatchID  int64
 	Event    string
 	Attempts int
+	// Когда переход случился. Нужен не для отправки, а чтобы отказ от
+	// протухшего события было видно в логе с его возрастом.
+	CreatedAt time.Time
+}
+
+// MatchStillLive — идёт ли матч прямо сейчас И держим ли его live мы.
+//
+// Проверяется перед стартовым пушем, а не только в момент записи события.
+// Между FlipLive и разбором очереди проходит до минуты, а при выключенном
+// пушере — сколько угодно: retention удаляет только ПОТРЕБЛЁННЫЕ события
+// (см. PruneLiveTables), поэтому непрочитанные копятся вечно. Без этой
+// проверки включение PUSH_ENABLED поднимало бы карточки по всему накопленному
+// хвосту — для матчей, которые кончились часы назад, — и погасить их было бы
+// нечем: update_token у такой карточки ещё не существует.
+//
+// Флаг проверяется вместе со статусом намеренно: status='live' без нашего
+// флага ставит пайплайн контента, и поднимать по нему карточку мы не вправе.
+func MatchStillLive(ctx context.Context, pool *pgxpool.Pool, matchID int64) (bool, error) {
+	var live bool
+	err := pool.QueryRow(ctx, `
+		select exists (
+			select 1 from matches m
+			join live_flags f on f.match_id = m.id
+			where m.id = $1 and m.status = 'live')`,
+		matchID).Scan(&live)
+	return live, err
 }
 
 // ClaimLiveEvents забирает пачку необработанных событий.
@@ -62,14 +88,14 @@ func ClaimLiveEvents(ctx context.Context, pool *pgxpool.Pool, limit, maxAttempts
 			limit $1
 			for update skip locked
 		)
-		returning id, match_id, event, attempts`,
+		returning id, match_id, event, attempts, created_at`,
 		limit, maxAttempts, at, at.Add(-retryAfter))
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (LiveEvent, error) {
 		var e LiveEvent
-		err := row.Scan(&e.ID, &e.MatchID, &e.Event, &e.Attempts)
+		err := row.Scan(&e.ID, &e.MatchID, &e.Event, &e.Attempts, &e.CreatedAt)
 		return e, err
 	})
 }
