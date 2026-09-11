@@ -130,9 +130,11 @@ send, and it can only decode into a type you define. Here is exactly what we sen
       "edition": "us_open_2026",
       "tournament_name": "US Open",
       "round": "R128",
+      "surface": "hard",
+      "started_at": "2026-08-31T15:04:05Z",
       "players": [
-        {"side": 1, "slug": "sinner",  "name": "Jannik Sinner"},
-        {"side": 2, "slug": "alcaraz", "name": "Carlos Alcaraz"}
+        {"side": 1, "slug": "sinner",  "name": "Jannik Sinner",  "last_name": "Sinner",  "rank": 1},
+        {"side": 2, "slug": "alcaraz", "name": "Carlos Alcaraz", "last_name": "Alcaraz", "rank": 2}
       ]
     },
     "content-state": {"phase": "on_court"},

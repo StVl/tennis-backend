@@ -289,6 +289,8 @@ func startPayload(now time.Time, card storage.PushCard, attributesType string) m
 			"edition":         card.Edition,
 			"tournament_name": card.TournamentName,
 			"round":           card.Round,
+			"surface":         card.Surface,
+			"started_at":      card.StartedAt,
 			"players":         card.Players,
 		},
 		"content-state": map[string]any{"phase": "on_court"},

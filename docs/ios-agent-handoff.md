@@ -89,15 +89,29 @@ but decode it as `[Player]` and render defensively rather than assuming a pair.
     "edition": "barcelona_2026",
     "tournament_name": "Barcelona Open Banc Sabadell",
     "round": "F",
+    "surface": "hard",
+    "started_at": "2026-04-19T14:00:00Z",
     "players": [
-      {"side": 1, "slug": "fils",   "name": "Arthur Fils"},
-      {"side": 2, "slug": "rublev", "name": "Andrey Rublev"}
+      {"side": 1, "slug": "fils",   "name": "Arthur Fils",   "last_name": "Fils",   "rank": 14},
+      {"side": 2, "slug": "rublev", "name": "Andrey Rublev", "last_name": "Rublev", "rank": 8}
     ]
   },
   "content-state": {"phase": "on_court"},
   "alert": {"title": "", "body": ""}
 }}
 ```
+
+`surface` is `hard`, `clay` or `grass` and is always present. `started_at` is RFC3339 and means
+**when we marked the match live**, not the first ball — the schedule time is deliberately not sent,
+because `live-schedule` rewrites it whenever the vendor moves a fixture.
+
+`last_name` and `rank` are per player and **nullable**. `last_name` is populated for every player in
+the roster today; `rank` is the current ATP ranking and is `null` for any opponent outside
+`is_tracked`, which is roughly one match in four. Design the card to read with a rank on one side and
+a blank on the other — that is the normal case, not an error.
+
+Two fields you may be tempted to expect are **not** sent and cannot be: a player's `country_code` is
+NULL for every row in the database, and tournament level (`ATP 1000` and such) has no column at all.
 
 **End:**
 

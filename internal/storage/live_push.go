@@ -298,17 +298,28 @@ func PushTokensForUser(ctx context.Context, pool *pgxpool.Pool, userID string) (
 // docs/live-status-ingest.md действует и в payload'е пуша — это последний шаг,
 // на котором его проще всего нарушить.
 type PushCard struct {
-	MatchID        int64        `json:"match_id"`
-	Edition        string       `json:"edition"`
-	TournamentName string       `json:"tournament_name"`
-	Round          string       `json:"round"`
-	Players        []CardPlayer `json:"players"`
+	MatchID        int64  `json:"match_id"`
+	Edition        string `json:"edition"`
+	TournamentName string `json:"tournament_name"`
+	Round          string `json:"round"`
+	Surface        string `json:"surface"`
+	// Когда матч пометили живым МЫ, а не время первого мяча: источник сообщает
+	// факт «на корте». scheduled_at сюда не годится — live-schedule переписывает
+	// его вслед за переносами фикстуры, поэтому на опаздывающем корте он
+	// расходится с реальностью на часы. Та же оговорка, что у LiveMatch.
+	StartedAt *time.Time   `json:"started_at"`
+	Players   []CardPlayer `json:"players"`
 }
 
 type CardPlayer struct {
-	Side int    `json:"side"`
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	Side     int     `json:"side"`
+	Slug     string  `json:"slug"`
+	Name     string  `json:"name"`
+	LastName *string `json:"last_name"`
+	// Текущий рейтинг ATP. null у соперника вне is_tracked: снапшотов для таких
+	// нет, и это примерно каждый четвёртый матч, а не редкий случай — карточка
+	// обязана читаться с рейтингом на одной стороне и пустотой на другой.
+	Rank *int `json:"rank"`
 }
 
 func PushCardFor(ctx context.Context, pool *pgxpool.Pool, matchID int64) (PushCard, error) {
@@ -317,20 +328,26 @@ func PushCardFor(ctx context.Context, pool *pgxpool.Pool, matchID int64) (PushCa
 		playersJSON string
 	)
 	err := pool.QueryRow(ctx, `
-		select m.id, te.slug, t.name, m.round_code,
+		select m.id, te.slug, t.name, m.round_code, te.surface::text, f.flipped_at,
 		       coalesce((
 		         select json_agg(json_build_object(
-		                  'side', mp.side, 'slug', p.slug, 'name', p.display_name)
+		                  'side', mp.side, 'slug', p.slug, 'name', p.display_name,
+		                  'last_name', p.last_name, 'rank', r.rank)
 		                order by mp.side, mp.slot)
 		         from match_participants mp
 		         join players p on p.id = mp.player_id
+		         -- tour_code обязателен: без него игрок с рейтингом в двух турах
+		         -- даёт две строки json_agg, то есть дубль игрока в карточке.
+		         left join v_current_rankings r
+		                on r.player_id = p.id and r.tour_code = 'atp'
 		         where mp.match_id = m.id), '[]')::text
 		from matches m
 		join tournament_editions te on te.id = m.edition_id
 		join tournaments t on t.id = te.tournament_id
+		left join live_flags f on f.match_id = m.id
 		where m.id = $1`,
 		matchID).Scan(&card.MatchID, &card.Edition, &card.TournamentName,
-		&card.Round, &playersJSON)
+		&card.Round, &card.Surface, &card.StartedAt, &playersJSON)
 	if err != nil {
 		return card, err
 	}

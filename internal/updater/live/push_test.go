@@ -467,6 +467,64 @@ func TestStartPayloadCarriesMatchIdentity(t *testing.T) {
 	}
 }
 
+// Карточка несёт покрытие, время выхода на корт, фамилию и рейтинг: без них
+// клиент режет name по пробелу и не рисует ни посева, ни поверхности.
+//
+// Оба игрока фикстуры отслеживаются и потому имеют рейтинг — именно поэтому
+// null здесь означает потерянный джойн с v_current_rankings, а не отсутствие
+// данных. У неотслеживаемого соперника null законен, и это ~четверть матчей.
+func TestStartPayloadCarriesCardDetails(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	fm := loadFixtureMatch(t, pool)
+	pushEnv(t, pool, fm.id)
+	ctx := context.Background()
+	emitEvent(t, pool, fm.id, storage.LiveEventLive)
+
+	sender := &fakeSender{}
+	if err := NewPush(pool, sender, pushCfg()).Update(ctx); err != nil {
+		t.Fatal(err)
+	}
+	starts := sender.byType(apns.PushStart)
+	if len(starts) != 1 {
+		t.Fatalf("start-пушей %d, ожидался 1", len(starts))
+	}
+	attrs, ok := apsField(t, starts[0], "attributes").(map[string]any)
+	if !ok {
+		t.Fatalf("attributes не объект: %#v", apsField(t, starts[0], "attributes"))
+	}
+	if attrs["surface"] == "" {
+		t.Error("surface пуст, хотя tournament_editions.surface — not null")
+	}
+
+	startedAt, ok := attrs["started_at"].(*time.Time)
+	if !ok || startedAt == nil {
+		t.Fatalf("started_at = %#v, ожидался flipped_at нашего флага", attrs["started_at"])
+	}
+	var flipped time.Time
+	if err := pool.QueryRow(ctx,
+		`select flipped_at from live_flags where match_id = $1`, fm.id).Scan(&flipped); err != nil {
+		t.Fatal(err)
+	}
+	if !startedAt.Equal(flipped) {
+		t.Errorf("started_at = %s, а флаг флипнут в %s", startedAt, flipped)
+	}
+
+	players, ok := attrs["players"].([]storage.CardPlayer)
+	if !ok || len(players) != 2 {
+		t.Fatalf("players = %#v, ожидались двое", attrs["players"])
+	}
+	for _, p := range players {
+		if p.LastName == nil || *p.LastName == "" {
+			t.Errorf("%s без last_name", p.Slug)
+		}
+		if p.Rank == nil {
+			t.Errorf("%s без rank, хотя игрок отслеживается: потерян джойн с v_current_rankings",
+				p.Slug)
+		}
+	}
+}
+
 func openSessions(t *testing.T, pool *pgxpool.Pool, matchID int64) int {
 	t.Helper()
 	var n int

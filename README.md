@@ -97,12 +97,17 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
   "attributes": {
     "match_id": 482, "edition": "us_open_2026",
     "tournament_name": "US Open", "round": "R128",
-    "players": [{"side": 1, "slug": "sinner", "name": "Jannik Sinner"},
-                {"side": 2, "slug": "alcaraz", "name": "Carlos Alcaraz"}]
+    "surface": "hard", "started_at": "2026-08-31T15:04:05Z",
+    "players": [{"side": 1, "slug": "sinner", "name": "Jannik Sinner",
+                 "last_name": "Sinner", "rank": 1},
+                {"side": 2, "slug": "alcaraz", "name": "Carlos Alcaraz",
+                 "last_name": "Alcaraz", "rank": 2}]
   },
   "content-state": {"phase": "on_court"}
 }}
 ```
+
+`started_at` — когда матч пометили живым мы, а не время первого мяча; `scheduled_at` в карточку не идёт, потому что `live-schedule` переписывает его вслед за переносами фикстуры. `rank` — текущий рейтинг ATP, и он **null** у соперника вне `is_tracked`: снапшотов для таких нет, а это примерно каждый четвёртый матч, поэтому карточка должна читаться с рейтингом на одной стороне и пустотой на другой. `country_code` и уровень турнира не отдаются: первый в `players` пуст для всех строк, второго нет в схеме вовсе.
 
 `attributes-type` должен совпадать с именем Swift-типа на клиенте — оно задаётся `APNS_ATTRIBUTES_TYPE`, а не зашито в код. End-пуш несёт `event: "end"`, `dismissal-date` и `content-state: {"phase": "ended"}` — результата в нём нет.
 
