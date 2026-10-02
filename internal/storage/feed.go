@@ -56,6 +56,11 @@ type WidgetFeed struct {
 	State       string       `json:"state"` // rows | same_tournament | split | no_follows | no_matches
 	Rows        []WidgetRow  `json:"rows"`
 	TodayColumn []TodayMatch `json:"today_column,omitempty"` // только для state=split
+	// Для большого виджета «Your week»: карточки подписок в той же форме, что your_season главной
+	// (ближайший и последний матч, имена), и местная дата по ?tz=. Строки и календарь клиент
+	// собирает тем же кодом, что на главной. Средний виджет эти поля не читает.
+	Season []SeasonCard `json:"season"`
+	Today  string       `json:"today"`
 }
 
 type WidgetRow struct {
@@ -487,8 +492,40 @@ func fillSeason(ctx context.Context, pool *pgxpool.Pool, feed *HomeFeed, followe
 	return nil
 }
 
-// GetWidgetFeed вычисляет все четыре состояния виджета (логика из README виджета).
+// GetWidgetFeed — состояние и строки виджета плюс карточки подписок для большого размера.
+//
+// Карточки — дополнение: их ошибка пишется в лог, и виджет получает строки без них, а не 500.
 func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, loc *time.Location, now time.Time) (*WidgetFeed, error) {
+	feed, err := widgetRows(ctx, pool, followed, loc, now)
+	if err != nil {
+		return nil, err
+	}
+	day := newHomeDay(now, loc)
+	feed.Today = day.today.Format("2006-01-02")
+	feed.Season = []SeasonCard{}
+	if len(followed) == 0 {
+		return feed, nil
+	}
+	roster, err := ListPlayers(ctx, pool, "en", false, "")
+	if err != nil {
+		slog.Error("widget: season cards failed, sending none", "error", err)
+		return feed, nil
+	}
+	bySlug := make(map[string]PlayerListItem, len(roster))
+	for _, p := range roster {
+		bySlug[p.Slug] = p
+	}
+	home := &HomeFeed{YourSeason: []SeasonCard{}}
+	if err := fillSeason(ctx, pool, home, followed, bySlug, day); err != nil {
+		slog.Error("widget: season cards failed, sending none", "error", err)
+		return feed, nil
+	}
+	feed.Season = home.YourSeason
+	return feed, nil
+}
+
+// widgetRows вычисляет все четыре состояния виджета (логика из README виджета).
+func widgetRows(ctx context.Context, pool *pgxpool.Pool, followed []string, loc *time.Location, now time.Time) (*WidgetFeed, error) {
 	if len(followed) == 0 {
 		return &WidgetFeed{State: "no_follows", Rows: []WidgetRow{}}, nil
 	}

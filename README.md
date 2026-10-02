@@ -242,6 +242,8 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - `round` (`R128`…`F`) и `is_live` — только у `type: "match"`: виджет клеит раунд к покрытию («QF · Grunt») и показывает бейдж LIVE. `round` опускается, если у матча нет кода раунда; `is_live` присутствует всегда и у строки-турнира равен `false`;
 - `location` — только у `type: "tournament"`: город **бренда** турнира (`tournaments.location`), опускается, если не заполнен. Тот же источник, что `location` в `/v1/tournaments`.
 
+Для большого виджета («Your week») ответ дополнительно несёт `season` — карточки подписок в форме `your_season` главной (`player`, `next_match`, `next_tournament`, `last_match`, `first_name`, `last_name`) — и `today`, местную дату по `?tz=`. Строки и календарь клиент собирает тем же кодом, что на главной. Сбой карточек не роняет ответ: `season` приходит пустым. Средний виджет эти поля не читает.
+
 ## Игроки
 
 ### `GET /v1/players?tracked=true&search=&lang=`
