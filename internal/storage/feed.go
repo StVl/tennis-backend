@@ -309,11 +309,16 @@ func headerFactsFor(cards []SeasonCard, day homeDay, cityByEdition map[string]st
 	in := func(t *time.Time, from, to time.Time) bool {
 		return t != nil && !t.Before(from) && t.Before(to)
 	}
-	for _, c := range cards {
+	for order, c := range cards {
 		p := HeaderPlayer{Slug: c.Player.Slug, FirstName: c.FirstName, LastName: c.LastName}
+		rank := 0
+		if c.Player.Rank != nil {
+			rank = *c.Player.Rank
+		}
 		add := func(m *PlayerMatch, today bool) {
 			hm := headerMatch{Player: p, Round: m.Round, At: m.ScheduledAt, Status: m.Status,
-				Won: m.Result != nil && *m.Result == "won", City: cityByEdition[m.Edition]}
+				Won: m.Result != nil && *m.Result == "won", City: cityByEdition[m.Edition],
+				Rank: rank, Order: order}
 			if today {
 				f.Today = append(f.Today, hm)
 			} else {

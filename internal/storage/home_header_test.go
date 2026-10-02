@@ -43,3 +43,36 @@ func TestHeaderStatusPriority(t *testing.T) {
 		t.Fatalf("title_day несёт город для нейтральной копии: %+v", s)
 	}
 }
+
+// Несколько подходящих подписок — называем ту, у кого выше рейтинг, а не первую по подписке.
+func TestHeaderStatusNamesTheHighestRanked(t *testing.T) {
+	mensik := headerMatch{Player: hp("mensik", "Jakub"), Round: "QF", Rank: 15, Order: 0}
+	alcaraz := headerMatch{Player: hp("alcaraz", "Carlos"), Round: "QF", Rank: 1, Order: 1}
+	unranked := headerMatch{Player: hp("x", "X"), Round: "QF", Rank: 0, Order: 2}
+
+	s := pickHeaderStatus(headerFacts{Today: []headerMatch{unranked, mensik, alcaraz}})
+	if s.Kind != "on_court" || s.Count != 3 || s.Player == nil || s.Player.Slug != "alcaraz" {
+		t.Fatalf("on_court должен назвать Алькараса: %+v", s)
+	}
+
+	finalM := mensik
+	finalM.Round, finalM.City = "F", "Tokyo"
+	finalA := alcaraz
+	finalA.Round, finalA.City = "F", "Beijing"
+	if s := pickHeaderStatus(headerFacts{Today: []headerMatch{finalM, finalA}}); s.Player.Slug != "alcaraz" || s.City != "Beijing" {
+		t.Fatalf("title_day: %+v", s)
+	}
+
+	lostM, lostA := mensik, alcaraz
+	lostM.Status, lostA.Status = "completed", "completed"
+	if s := pickHeaderStatus(headerFacts{Yesterday: []headerMatch{lostM, lostA}}); s.Kind != "lost_yesterday" || s.Player.Slug != "alcaraz" {
+		t.Fatalf("lost_yesterday: %+v", s)
+	}
+
+	// Без рейтингов решает порядок подписок.
+	a, b := unranked, unranked
+	a.Player, b.Player, b.Order = hp("a", "A"), hp("b", "B"), 3
+	if s := pickHeaderStatus(headerFacts{Today: []headerMatch{b, a}}); s.Player.Slug != "a" {
+		t.Fatalf("порядок подписок: %+v", s)
+	}
+}

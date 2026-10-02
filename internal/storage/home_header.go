@@ -1,11 +1,17 @@
 package storage
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Статус в заголовке главной: «Tuesday, Carlos plays at 09:00.» Сервер выбирает, КАКОЙ статус
 // (спецификация главной, §4.1, первое совпадение выигрывает), клиент собирает копию: EN/RU,
 // 12/24 часа и нейтральные формулировки при скрытых счетах (§10.4) — поэтому наружу уходят
 // вид и факты, а не готовая строка.
+
+// Если подходящих подписок несколько, называется та, у которой выше рейтинг ATP (без рейтинга —
+// последними, при равенстве — порядок подписок): так решил продукт поверх §4.1.
 
 // HeaderStatus — один из видов §4.1.
 type HeaderStatus struct {
@@ -15,7 +21,8 @@ type HeaderStatus struct {
 	Player *HeaderPlayer `json:"player,omitempty"`
 	// Время матча для plays_today.
 	At *time.Time `json:"at,omitempty"`
-	// Сколько подписок на корте сегодня (on_court).
+	// Сколько подписок на корте сегодня (on_court). У on_court есть и player — подписка с самым
+	// высоким рейтингом: «Carlos and 2 more on court.»
 	Count int `json:"count,omitempty"`
 	// Город турнира: tournament_day, final_day, а у title_day — для нейтральной копии
 	// «final day in Chengdu» при скрытых счетах.
@@ -39,6 +46,26 @@ type headerMatch struct {
 	Won    bool
 	// Город турнира — для title_day.
 	City string
+	// Рейтинг ATP игрока: 0 — нет. По нему выбирается, кого назвать.
+	Rank int
+	// Порядок подписки — при равном рейтинге.
+	Order int
+}
+
+// byRank — сначала высокий рейтинг, игроки без рейтинга в конце, при равенстве порядок подписок.
+func byRank(ms []headerMatch) []headerMatch {
+	out := append([]headerMatch(nil), ms...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if (a.Rank == 0) != (b.Rank == 0) {
+			return b.Rank == 0
+		}
+		if a.Rank != b.Rank {
+			return a.Rank < b.Rank
+		}
+		return a.Order < b.Order
+	})
+	return out
 }
 
 // headerTournament — идущий турнир в порядке карусели.
@@ -58,6 +85,7 @@ type headerFacts struct {
 
 // pickHeaderStatus — §4.1, первое совпадение выигрывает.
 func pickHeaderStatus(f headerFacts) HeaderStatus {
+	f.Today, f.Yesterday = byRank(f.Today), byRank(f.Yesterday)
 	// 1. Подписка играет финал сегодня.
 	for _, m := range f.Today {
 		if m.Round == "F" {
@@ -79,7 +107,8 @@ func pickHeaderStatus(f headerFacts) HeaderStatus {
 		}
 	}
 	if len(players) >= 2 {
-		return HeaderStatus{Kind: "on_court", Count: len(players)}
+		top := f.Today[0].Player // f.Today уже отсортирован по рейтингу
+		return HeaderStatus{Kind: "on_court", Count: len(players), Player: &top}
 	}
 	// 4–5. День полуфиналов / четвертьфиналов в идущем турнире.
 	for _, t := range f.Live {

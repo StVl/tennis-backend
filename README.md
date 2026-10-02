@@ -187,7 +187,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 
 - `today` — местная дата `2026-10-02`, относительно которой решено всё остальное.
 - `header_status` — какой статус в заголовке (§4.1, первое совпадение выигрывает). Сервер выбирает **вид**, текст собирает клиент (EN/RU, 12/24 ч, нейтральные формулировки при скрытых счетах):
-  `{"kind": "plays_today", "player": {"slug","first_name","last_name"}, "at": "…"}`. Виды: `title_day` (+`player`, `city`), `plays_today` (+`player`, `at`), `on_court` (+`count`), `semis_day`, `quarters_day` (+`city`), `champion_yesterday`, `lost_yesterday` (+`player`, `city`), `tournament_day` (+`city`, `day`), `final_day` (+`city`), `season`.
+  `{"kind": "plays_today", "player": {"slug","first_name","last_name"}, "at": "…"}`. Если подходящих подписок несколько, в `player` — та, у кого выше рейтинг ATP (без рейтинга — последними, при равенстве — порядок подписок). Виды: `title_day` (+`player`, `city`), `plays_today` (+`player`, `at`), `on_court` (+`count` и `player` — подписка с самым высоким рейтингом), `semis_day`, `quarters_day` (+`city`), `champion_yesterday`, `lost_yesterday` (+`player`, `city`), `tournament_day` (+`city`, `day`), `final_day` (+`city`), `season`.
 - `tournaments` — идущие розыгрыши (и вчера закончившиеся, пока подписке нужна сетка), в порядке карусели: больше подписок → выше уровень → имя. Пусто — блок скрыт.
   ```json
   {"edition": "beijing_2026", "name": "China Open", "city": "Beijing", "category": "ATP 500",
