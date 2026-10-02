@@ -40,6 +40,8 @@ type SeasonCard struct {
 type GridPlayer struct {
 	Slug      string  `json:"slug"`
 	Name      string  `json:"name"`
+	FirstName *string `json:"first_name"`
+	LastName  *string `json:"last_name"`
 	PhotoURL  *string `json:"photo_url"`
 	Rank      *int    `json:"rank"`       // null, если нет свежего снапшота в v_current_rankings
 	RankDelta *int    `json:"rank_delta"` // к предыдущему снапшоту
@@ -360,7 +362,7 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 	for _, p := range roster {
 		rosterBySlug[p.Slug] = p
 		feed.AllPlayers = append(feed.AllPlayers, GridPlayer{
-			Slug: p.Slug, Name: p.Name, PhotoURL: p.PhotoURL,
+			Slug: p.Slug, Name: p.Name, FirstName: p.FirstName, LastName: p.LastName, PhotoURL: p.PhotoURL,
 			Rank: p.Rank, RankDelta: p.RankDelta, SeasonRankDelta: p.SeasonRankDelta,
 			Followed: followedSet[p.Slug],
 		})

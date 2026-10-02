@@ -11,8 +11,11 @@ import (
 
 // PlayerListItem — карточка игрока для списков (онбординг, сетка "All players").
 type PlayerListItem struct {
-	Slug      string  `json:"slug"`
-	Name      string  `json:"name"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	// Имя и фамилия раздельно: по display name клиент не отличит «de Minaur» от второго имени.
+	FirstName *string `json:"first_name"`
+	LastName  *string `json:"last_name"`
 	PhotoURL  *string `json:"photo_url"`
 	IsTracked bool    `json:"is_tracked"`
 	Rank      *int    `json:"rank"`
@@ -114,7 +117,8 @@ type H2H struct {
 
 func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOnly bool, search string) ([]PlayerListItem, error) {
 	rows, err := pool.Query(ctx, `
-		select p.slug, p.display_name, p.photo_url, p.is_tracked,
+		select p.slug, p.display_name, nullif(p.first_name, ''), nullif(p.last_name, ''),
+		       p.photo_url, p.is_tracked,
 		       r.rank, r.delta_vs_prev, ss.rank - r.rank,
 		       coalesce(ps.name->>$1, ps.name->>'en')
 		from players p
@@ -135,7 +139,7 @@ func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOn
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlayerListItem, error) {
 		var p PlayerListItem
-		err := row.Scan(&p.Slug, &p.Name, &p.PhotoURL, &p.IsTracked, &p.Rank, &p.RankDelta,
+		err := row.Scan(&p.Slug, &p.Name, &p.FirstName, &p.LastName, &p.PhotoURL, &p.IsTracked, &p.Rank, &p.RankDelta,
 			&p.SeasonRankDelta, &p.PlayStyle)
 		return p, err
 	})
