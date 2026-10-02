@@ -139,6 +139,7 @@ func (h *Handler) MyHome(w http.ResponseWriter, r *http.Request) {
 	}
 	feed, err := storage.GetHomeFeed(
 		r.Context(), h.pool, langParam(r), followed, highlightsDaysParam(r), loc, time.Now(),
+		r.URL.Query().Has("tz"),
 	)
 	if err != nil {
 		respondQueryError(w, err)

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -179,8 +180,13 @@ func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []st
 	return out, rows.Err()
 }
 
-// weeklyHighlightsLimit — сколько карточек отдаём (§7 спецификации главной).
-const weeklyHighlightsLimit = 10
+// Сколько карточек итогов недели отдаём. Старые клиенты подписывают секцию как «результаты ваших
+// игроков» и получают прежние 5 матчей подписок; новая главная (§7 спецификации) — до 10, с
+// добивкой последними раундами идущих турниров. Новую главную узнаём по ?tz=: его шлёт только она.
+const (
+	weeklyHighlightsLimitV1 = 5
+	weeklyHighlightsLimit   = 10
+)
 
 // weeklyHighlights — завершённые матчи подписок за последние `days` дней.
 //
@@ -188,7 +194,7 @@ const weeklyHighlightsLimit = 10
 // столбец, по которому строится сетка), внутри раунда — свежие. Клиенту остаётся отрисовать.
 //
 // Матч двух подписок попадает в выдачу один раз: форма нейтральная, а не «глазами игрока».
-func weeklyHighlights(ctx context.Context, pool *pgxpool.Pool, followed []string, since time.Time) ([]Match, error) {
+func weeklyHighlights(ctx context.Context, pool *pgxpool.Pool, followed []string, since time.Time, limit int) ([]Match, error) {
 	rows, err := pool.Query(ctx, matchSelect+`
 		left join rounds ro on ro.code = m.round_code
 		where m.status::text = 'completed'
@@ -198,7 +204,7 @@ func weeklyHighlights(ctx context.Context, pool *pgxpool.Pool, followed []string
 		              where mp2.match_id = m.id and p2.slug = any($1))
 		order by ro.sort_order desc nulls last, m.scheduled_at desc nulls last, m.id desc
 		limit $3`,
-		followed, since, weeklyHighlightsLimit)
+		followed, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -336,9 +342,14 @@ func headerFactsFor(cards []SeasonCard, day homeDay, cityByEdition map[string]st
 // `?highlights_days=` секцию видно в разработке, не подменяя смысл в проде.
 //
 // loc — часовой пояс пользователя (?tz=): от него зависят «сегодня»/«вчера» в заголовке,
-// last_match и день турнира. now — параметром ради тестов.
+// last_match и день турнира. v2 — клиент новой главной (прислал ?tz=): только он получает
+// расширенные итоги недели; новые поля получают все, старые клиенты их игнорируют.
+// now — параметром ради тестов.
+//
+// Блоки новой главной не роняют ответ: их ошибка пишется в лог, а блок приходит пустым. Иначе
+// сбой нового запроса отнял бы главную и у старых клиентов, которым эти блоки не нужны.
 func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string,
-	highlightDays int, loc *time.Location, now time.Time) (*HomeFeed, error) {
+	highlightDays int, loc *time.Location, now time.Time, v2 bool) (*HomeFeed, error) {
 	roster, err := ListPlayers(ctx, pool, lang, true, "")
 	if err != nil {
 		return nil, err
@@ -376,7 +387,8 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 
 	tournaments, tournamentFacts, err := loadHomeTournaments(ctx, pool, followed, day)
 	if err != nil {
-		return nil, err
+		slog.Error("home v2: tournaments block failed, sending it empty", "error", err)
+		tournaments, tournamentFacts = []HomeTournament{}, nil
 	}
 	feed.Tournaments = tournaments
 	cityByEdition := map[string]string{}
@@ -399,7 +411,11 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		since := now.AddDate(0, 0, -highlightDays)
 		var taken []int64
 		if len(followed) > 0 {
-			highlights, err := weeklyHighlights(ctx, pool, followed, since)
+			limit := weeklyHighlightsLimitV1
+			if v2 {
+				limit = weeklyHighlightsLimit
+			}
+			highlights, err := weeklyHighlights(ctx, pool, followed, since, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -408,15 +424,17 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 				taken = append(taken, m.ID)
 			}
 		}
-		if taken == nil {
-			taken = []int64{}
+		if v2 {
+			if taken == nil {
+				taken = []int64{}
+			}
+			more, err := liveTournamentHighlights(ctx, pool, liveEditions, since, taken,
+				weeklyHighlightsLimit-len(feed.WeeklyHighlights))
+			if err != nil {
+				slog.Error("home v2: live-tournament highlights failed, skipping them", "error", err)
+			}
+			feed.WeeklyHighlights = append(feed.WeeklyHighlights, more...)
 		}
-		more, err := liveTournamentHighlights(ctx, pool, liveEditions, since, taken,
-			weeklyHighlightsLimit-len(feed.WeeklyHighlights))
-		if err != nil {
-			return nil, err
-		}
-		feed.WeeklyHighlights = append(feed.WeeklyHighlights, more...)
 	}
 	return feed, nil
 }
@@ -435,11 +453,13 @@ func fillSeason(ctx context.Context, pool *pgxpool.Pool, feed *HomeFeed, followe
 	}
 	lastMatches, err := lastMatchPerPlayer(ctx, pool, followed, day.yesterdayFrom)
 	if err != nil {
-		return err
+		slog.Error("home v2: last matches failed, sending none", "error", err)
+		lastMatches = map[string]PlayerMatch{}
 	}
 	names, err := playerNames(ctx, pool, followed)
 	if err != nil {
-		return err
+		slog.Error("home v2: player names failed, sending none", "error", err)
+		names = map[string][2]string{}
 	}
 
 	// порядок карточек = порядок в player_ids; неизвестные слаги молча пропускаем
