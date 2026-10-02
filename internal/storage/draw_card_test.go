@@ -61,3 +61,14 @@ func TestMakeSlotTBD(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+func TestFillDrawRoundAddsTBDNodes(t *testing.T) {
+	two := 2
+	got := fillDrawRound([]DrawCardMatch{{ID: 7, BracketPos: &two}}, 2)
+	if len(got) != 4 || got[1].ID != 7 {
+		t.Fatalf("ожидали 4 матча с реальным на позиции 2: %+v", got)
+	}
+	if got[0].ID != -2001 || !got[0].Top.TBD || !got[0].Bottom.TBD || *got[0].BracketPos != 1 {
+		t.Fatalf("TBD-узел: %+v", got[0])
+	}
+}

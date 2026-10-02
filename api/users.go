@@ -126,15 +126,19 @@ func (h *Handler) ReplaceFollows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "unknown_slugs": unknown})
 }
 
-// MyHome — GET /v1/users/me/home: как /v1/home, но подписки из БД.
+// MyHome — GET /v1/users/me/home?tz=: как /v1/home, но подписки из БД.
 func (h *Handler) MyHome(w http.ResponseWriter, r *http.Request) {
+	loc, ok := tzParam(w, r)
+	if !ok {
+		return
+	}
 	followed, err := storage.FollowSlugs(r.Context(), h.pool, userID(r))
 	if err != nil {
 		respondQueryError(w, err)
 		return
 	}
 	feed, err := storage.GetHomeFeed(
-		r.Context(), h.pool, langParam(r), followed, highlightsDaysParam(r),
+		r.Context(), h.pool, langParam(r), followed, highlightsDaysParam(r), loc, time.Now(),
 	)
 	if err != nil {
 		respondQueryError(w, err)

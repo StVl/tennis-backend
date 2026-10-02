@@ -149,7 +149,7 @@ func tournamentCategory(slug string) string {
 	case "australian_open", "roland_garros", "wimbledon", "us_open":
 		return "Grand Slam"
 	case "indian_wells", "miami", "monte_carlo", "madrid", "rome",
-		"canada", "cincinnati", "shanghai", "paris":
+		"canada", "cincinnati", "shanghai", "paris_masters":
 		return "Masters 1000"
 	default:
 		return ""

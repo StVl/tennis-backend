@@ -11,10 +11,16 @@ import (
 
 // HomeFeed — весь главный экран одним ответом (замена config.json + playerCards).
 type HomeFeed struct {
-	YourSeason           []SeasonCard         `json:"your_season"`
-	AllPlayers           []GridPlayer         `json:"all_players"`
-	WeeklyHighlights     []Match              `json:"weekly_highlights"`
-	FeaturedTournament   *FeaturedTournament  `json:"featured_tournament"`
+	YourSeason         []SeasonCard        `json:"your_season"`
+	AllPlayers         []GridPlayer        `json:"all_players"`
+	WeeklyHighlights   []Match             `json:"weekly_highlights"`
+	FeaturedTournament *FeaturedTournament `json:"featured_tournament"`
+	// Местная дата пользователя (?tz=), относительно которой решены «сегодня»/«вчера».
+	Today string `json:"today"`
+	// Статус в заголовке (§4.1 спецификации главной).
+	HeaderStatus HeaderStatus `json:"header_status"`
+	// Идущие турниры в порядке карусели; пусто — блок скрыт.
+	Tournaments []HomeTournament `json:"tournaments"`
 }
 
 // SeasonCard — большая карточка подписанного игрока.
@@ -22,6 +28,12 @@ type SeasonCard struct {
 	Player         PlayerListItem    `json:"player"`
 	NextMatch      *PlayerMatch      `json:"next_match"`
 	NextTournament *PlayerTournament `json:"next_tournament"` // только если нет матча
+	// Последний сыгранный матч, если он был вчера или сегодня (по ?tz=) — «Won the title ·
+	// def. Hurkacz 6-4 7-6» в Your week. Независим от next_match.
+	LastMatch *PlayerMatch `json:"last_match"`
+	// Имя и фамилия раздельно: в player только display name.
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
 }
 
 // GridPlayer — элемент сетки "All players" / онбординга.
@@ -31,7 +43,9 @@ type GridPlayer struct {
 	PhotoURL  *string `json:"photo_url"`
 	Rank      *int    `json:"rank"`       // null, если нет свежего снапшота в v_current_rankings
 	RankDelta *int    `json:"rank_delta"` // к предыдущему снапшоту
-	Followed  bool    `json:"followed"`
+	// С начала сезона: ранг в первом снапшоте года минус текущий (+2 — поднялся на два места).
+	SeasonRankDelta *int `json:"season_rank_delta"`
+	Followed        bool `json:"followed"`
 }
 
 // WidgetFeed — готовый таймлайн виджета: клиент только рендерит.
@@ -163,8 +177,8 @@ func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []st
 	return out, rows.Err()
 }
 
-// weeklyHighlightsLimit — сколько карточек отдаём: столько же, сколько показывал старый клиент.
-const weeklyHighlightsLimit = 5
+// weeklyHighlightsLimit — сколько карточек отдаём (§7 спецификации главной).
+const weeklyHighlightsLimit = 10
 
 // weeklyHighlights — завершённые матчи подписок за последние `days` дней.
 //
@@ -189,12 +203,140 @@ func weeklyHighlights(ctx context.Context, pool *pgxpool.Pool, followed []string
 	return pgx.CollectRows(rows, scanMatch)
 }
 
+// liveTournamentHighlights — добивка итогов недели: последние раунды идущих турниров, кроме
+// уже взятых матчей подписок. Без неё у пользователя без подписок (или с тихой неделей)
+// секция пуста, а по спецификации она есть всегда.
+func liveTournamentHighlights(ctx context.Context, pool *pgxpool.Pool, editions []string,
+	since time.Time, exclude []int64, limit int) ([]Match, error) {
+	if limit <= 0 || len(editions) == 0 {
+		return nil, nil
+	}
+	rows, err := pool.Query(ctx, matchSelect+`
+		left join rounds ro on ro.code = m.round_code
+		where m.status::text = 'completed'
+		  and te.slug = any($1)
+		  and m.scheduled_at >= $2
+		  and m.round_code !~* '^q'
+		  and m.id <> all($3)
+		order by ro.sort_order desc nulls last, m.scheduled_at desc nulls last, m.id desc
+		limit $4`,
+		editions, since, exclude, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanMatch)
+}
+
+// lastMatchPerPlayer — последний завершённый матч каждого игрока не раньше since.
+func lastMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
+	since time.Time) (map[string]PlayerMatch, error) {
+	rows, err := pool.Query(ctx, `
+		select distinct on (pl.slug)
+		       pl.slug,
+		       vpm.match_id, vpm.round_code, vpm.scheduled_at, vpm.status::text,
+		       vpm.outcome::text, vpm.result, vpm.score_text,
+		       op.slug, op.display_name, op.photo_url,
+		       te.slug, t.name, te.surface::text
+		from v_player_matches vpm
+		join players pl on pl.id = vpm.player_id
+		left join players op on op.id = vpm.opponent_id
+		join tournament_editions te on te.id = vpm.edition_id
+		join tournaments t on t.id = te.tournament_id
+		where pl.slug = any($1) and vpm.status = 'completed'
+		  and vpm.scheduled_at >= $2
+		order by pl.slug, vpm.scheduled_at desc`,
+		slugs, since)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]PlayerMatch{}
+	for rows.Next() {
+		var (
+			slug                          string
+			m                             PlayerMatch
+			oppSlug, oppName, oppPhotoURL *string
+		)
+		if err := rows.Scan(&slug, &m.MatchID, &m.Round, &m.ScheduledAt, &m.Status,
+			&m.Outcome, &m.Result, &m.ScoreText,
+			&oppSlug, &oppName, &oppPhotoURL,
+			&m.Edition, &m.TournamentName, &m.Surface); err != nil {
+			return nil, err
+		}
+		if oppSlug != nil {
+			m.Opponent = &Opponent{Slug: *oppSlug, Name: deref(oppName), PhotoURL: oppPhotoURL}
+		}
+		out[slug] = m
+	}
+	return out, rows.Err()
+}
+
+// playerNames — имя и фамилия раздельно (у list-форм есть только display name).
+func playerNames(ctx context.Context, pool *pgxpool.Pool, slugs []string) (map[string][2]string, error) {
+	rows, err := pool.Query(ctx,
+		`select slug, coalesce(first_name, ''), coalesce(last_name, ''), display_name
+		 from players where slug = any($1)`, slugs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][2]string{}
+	for rows.Next() {
+		var slug, first, last, display string
+		if err := rows.Scan(&slug, &first, &last, &display); err != nil {
+			return nil, err
+		}
+		if last == "" {
+			last = lastWord(display)
+		}
+		out[slug] = [2]string{first, last}
+	}
+	return out, rows.Err()
+}
+
+// headerFactsFor — сегодняшние и вчерашние матчи подписок для статуса в заголовке.
+// Ближайший и последний матч уже загружены лентой; отдельного запроса не нужно: подписка,
+// игравшая сегодня, видна либо как next_match сегодня, либо как last_match сегодня.
+func headerFactsFor(cards []SeasonCard, day homeDay, cityByEdition map[string]string) headerFacts {
+	var f headerFacts
+	in := func(t *time.Time, from, to time.Time) bool {
+		return t != nil && !t.Before(from) && t.Before(to)
+	}
+	for _, c := range cards {
+		p := HeaderPlayer{Slug: c.Player.Slug, FirstName: c.FirstName, LastName: c.LastName}
+		add := func(m *PlayerMatch, today bool) {
+			hm := headerMatch{Player: p, Round: m.Round, At: m.ScheduledAt, Status: m.Status,
+				Won: m.Result != nil && *m.Result == "won", City: cityByEdition[m.Edition]}
+			if today {
+				f.Today = append(f.Today, hm)
+			} else {
+				f.Yesterday = append(f.Yesterday, hm)
+			}
+		}
+		if m := c.NextMatch; m != nil && (m.Status == "live" || in(m.ScheduledAt, day.todayFrom, day.to)) {
+			add(m, true)
+		}
+		if m := c.LastMatch; m != nil {
+			switch {
+			case in(m.ScheduledAt, day.todayFrom, day.to):
+				add(m, true)
+			case in(m.ScheduledAt, day.yesterdayFrom, day.todayFrom):
+				add(m, false)
+			}
+		}
+	}
+	return f
+}
+
 // GetHomeFeed собирает главный экран: карточки подписок + полная сетка ростера + итоги недели.
 //
 // `highlightDays` — ширина окна итогов; 0 выключает блок. Параметр, а не константа, потому что
 // «последние 7 дней» — правильная семантика, но пустая на снапшоте базы, который отстал: с
 // `?highlights_days=` секцию видно в разработке, не подменяя смысл в проде.
-func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string, highlightDays int) (*HomeFeed, error) {
+//
+// loc — часовой пояс пользователя (?tz=): от него зависят «сегодня»/«вчера» в заголовке,
+// last_match и день турнира. now — параметром ради тестов.
+func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string,
+	highlightDays int, loc *time.Location, now time.Time) (*HomeFeed, error) {
 	roster, err := ListPlayers(ctx, pool, lang, true, "")
 	if err != nil {
 		return nil, err
@@ -205,37 +347,97 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		followedSet[s] = true
 	}
 
+	day := newHomeDay(now, loc)
 	feed := &HomeFeed{
 		YourSeason:         []SeasonCard{},
 		AllPlayers:         make([]GridPlayer, 0, len(roster)),
 		WeeklyHighlights:   []Match{},
 		FeaturedTournament: nil,
+		Today:              day.today.Format("2006-01-02"),
+		Tournaments:        []HomeTournament{},
 	}
 	rosterBySlug := map[string]PlayerListItem{}
 	for _, p := range roster {
 		rosterBySlug[p.Slug] = p
 		feed.AllPlayers = append(feed.AllPlayers, GridPlayer{
 			Slug: p.Slug, Name: p.Name, PhotoURL: p.PhotoURL,
-			Rank: p.Rank, RankDelta: p.RankDelta, Followed: followedSet[p.Slug],
+			Rank: p.Rank, RankDelta: p.RankDelta, SeasonRankDelta: p.SeasonRankDelta,
+			Followed: followedSet[p.Slug],
 		})
 	}
 
-	featured, err := loadFeaturedTournament(ctx, pool, lang, time.Now())
+	featured, err := loadFeaturedTournament(ctx, pool, lang, now)
 	if err != nil {
 		return nil, err
 	}
 	feed.FeaturedTournament = featured
 
-	if len(followed) == 0 {
-		return feed, nil
-	}
-	nextMatches, err := nextMatchPerPlayer(ctx, pool, followed, time.Now().Add(-liveStaleGrace))
+	tournaments, tournamentFacts, err := loadHomeTournaments(ctx, pool, followed, day)
 	if err != nil {
 		return nil, err
+	}
+	feed.Tournaments = tournaments
+	cityByEdition := map[string]string{}
+	liveEditions := make([]string, 0, len(tournaments))
+	for _, t := range tournaments {
+		cityByEdition[t.Edition] = deref(t.City)
+		liveEditions = append(liveEditions, t.Edition)
+	}
+
+	if len(followed) > 0 {
+		if err := fillSeason(ctx, pool, feed, followed, rosterBySlug, day); err != nil {
+			return nil, err
+		}
+	}
+	facts := headerFactsFor(feed.YourSeason, day, cityByEdition)
+	facts.Live = tournamentFacts
+	feed.HeaderStatus = pickHeaderStatus(facts)
+
+	if highlightDays > 0 {
+		since := now.AddDate(0, 0, -highlightDays)
+		var taken []int64
+		if len(followed) > 0 {
+			highlights, err := weeklyHighlights(ctx, pool, followed, since)
+			if err != nil {
+				return nil, err
+			}
+			feed.WeeklyHighlights = append(feed.WeeklyHighlights, highlights...)
+			for _, m := range highlights {
+				taken = append(taken, m.ID)
+			}
+		}
+		if taken == nil {
+			taken = []int64{}
+		}
+		more, err := liveTournamentHighlights(ctx, pool, liveEditions, since, taken,
+			weeklyHighlightsLimit-len(feed.WeeklyHighlights))
+		if err != nil {
+			return nil, err
+		}
+		feed.WeeklyHighlights = append(feed.WeeklyHighlights, more...)
+	}
+	return feed, nil
+}
+
+// fillSeason — карточки подписок: ближайший матч (иначе турнир), последний матч за вчера и
+// сегодня, имя и фамилия.
+func fillSeason(ctx context.Context, pool *pgxpool.Pool, feed *HomeFeed, followed []string,
+	rosterBySlug map[string]PlayerListItem, day homeDay) error {
+	nextMatches, err := nextMatchPerPlayer(ctx, pool, followed, day.now.Add(-liveStaleGrace))
+	if err != nil {
+		return err
 	}
 	nextTournaments, err := nextTournamentPerPlayer(ctx, pool, followed)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	lastMatches, err := lastMatchPerPlayer(ctx, pool, followed, day.yesterdayFrom)
+	if err != nil {
+		return err
+	}
+	names, err := playerNames(ctx, pool, followed)
+	if err != nil {
+		return err
 	}
 
 	// порядок карточек = порядок в player_ids; неизвестные слаги молча пропускаем
@@ -244,25 +446,18 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		if !ok {
 			continue
 		}
-		card := SeasonCard{Player: p}
+		card := SeasonCard{Player: p, FirstName: names[slug][0], LastName: names[slug][1]}
 		if m, ok := nextMatches[slug]; ok {
 			card.NextMatch = &m
 		} else if t, ok := nextTournaments[slug]; ok {
 			card.NextTournament = &t
 		}
+		if m, ok := lastMatches[slug]; ok {
+			card.LastMatch = &m
+		}
 		feed.YourSeason = append(feed.YourSeason, card)
 	}
-
-	if highlightDays > 0 {
-		highlights, err := weeklyHighlights(ctx, pool, followed, time.Now().AddDate(0, 0, -highlightDays))
-		if err != nil {
-			return nil, err
-		}
-		if highlights != nil {
-			feed.WeeklyHighlights = highlights
-		}
-	}
-	return feed, nil
+	return nil
 }
 
 // GetWidgetFeed вычисляет все четыре состояния виджета (логика из README виджета).

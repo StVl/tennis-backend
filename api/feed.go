@@ -33,11 +33,29 @@ func highlightsDaysParam(r *http.Request) int {
 	return intParam(r, "highlights_days", 7, 365)
 }
 
-// Home — GET /v1/home?player_ids=...&lang=&highlights_days=
-// Главный экран одним запросом: карточки подписок + полная сетка ростера + итоги недели.
+// tzParam — ?tz= (IANA). Пусто — UTC; неизвестная зона — false, ответ уже записан (400 bad_tz).
+func tzParam(w http.ResponseWriter, r *http.Request) (*time.Location, bool) {
+	tz := r.URL.Query().Get("tz")
+	if tz == "" {
+		return time.UTC, true
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_tz", "unknown timezone: "+tz)
+		return nil, false
+	}
+	return loc, true
+}
+
+// Home — GET /v1/home?player_ids=...&lang=&highlights_days=&tz=
+// Главный экран одним запросом: заголовок, турниры, карточки подписок, ростер, итоги недели.
 func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
+	loc, ok := tzParam(w, r)
+	if !ok {
+		return
+	}
 	feed, err := storage.GetHomeFeed(
-		r.Context(), h.pool, langParam(r), playerIDsParam(r), highlightsDaysParam(r),
+		r.Context(), h.pool, langParam(r), playerIDsParam(r), highlightsDaysParam(r), loc, time.Now(),
 	)
 	if err != nil {
 		respondQueryError(w, err)

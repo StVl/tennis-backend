@@ -17,7 +17,10 @@ type PlayerListItem struct {
 	IsTracked bool    `json:"is_tracked"`
 	Rank      *int    `json:"rank"`
 	RankDelta *int    `json:"rank_delta"`
-	PlayStyle *string `json:"play_style"`
+	// Изменение рейтинга с начала сезона: ранг в первом снапшоте года минус текущий
+	// (+2 — поднялся на два места). Null, если снапшота начала года нет.
+	SeasonRankDelta *int    `json:"season_rank_delta"`
+	PlayStyle       *string `json:"play_style"`
 }
 
 // PlayerDetail — полный профиль для карточки игрока.
@@ -112,10 +115,16 @@ type H2H struct {
 func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOnly bool, search string) ([]PlayerListItem, error) {
 	rows, err := pool.Query(ctx, `
 		select p.slug, p.display_name, p.photo_url, p.is_tracked,
-		       r.rank, r.delta_vs_prev,
+		       r.rank, r.delta_vs_prev, ss.rank - r.rank,
 		       coalesce(ps.name->>$1, ps.name->>'en')
 		from players p
 		left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+		left join lateral (
+			select rs.rank from ranking_snapshots rs
+			where rs.player_id = p.id and rs.tour_code = 'atp'
+			  and rs.snapshot_date >= date_trunc('year', r.snapshot_date)::date
+			order by rs.snapshot_date limit 1
+		) ss on true
 		left join play_styles ps on ps.id = p.play_style_id
 		where (not $2 or p.is_tracked)
 		  and ($3 = '' or p.display_name ilike '%' || $3 || '%')
@@ -126,7 +135,8 @@ func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOn
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlayerListItem, error) {
 		var p PlayerListItem
-		err := row.Scan(&p.Slug, &p.Name, &p.PhotoURL, &p.IsTracked, &p.Rank, &p.RankDelta, &p.PlayStyle)
+		err := row.Scan(&p.Slug, &p.Name, &p.PhotoURL, &p.IsTracked, &p.Rank, &p.RankDelta,
+			&p.SeasonRankDelta, &p.PlayStyle)
 		return p, err
 	})
 }

@@ -148,7 +148,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 
 Замена config.json: приложение и виджет получают готовую выдачу одним запросом. До появления серверных подписок клиент передаёт их сам через `?player_ids=` (из App Group); авторизованные варианты с подписками из БД — в разделе «Пользователи».
 
-### `GET /v1/home?player_ids=sinner,alcaraz&lang=en&highlights_days=7`
+### `GET /v1/home?player_ids=sinner,alcaraz&lang=en&highlights_days=7&tz=Europe/Madrid`
 
 Главный экран целиком:
 
@@ -175,9 +175,39 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 
 - `your_season` — карточки подписанных в порядке `player_ids`; у каждой ближайший матч, а если его нет — ближайший турнир (`next_tournament` заполняется только при `next_match: null`).
 - `all_players` — **всегда весь ростер** с флагом `followed` (эхо переданного списка), отсортирован по рейтингу; `rank`/`rank_delta` могут быть `null`, если нет свежего снапшота. Пустой `player_ids` → пустой `your_season` + полная сетка: режим онбординга.
-- `weekly_highlights` — до 5 **завершённых** матчей подписок за последние `highlights_days` дней (по умолчанию 7, максимум 365, `0` выключает блок). Порядок — правило экрана и потому серверное: сначала важные раунды (`rounds.sort_order`, тот же столбец, по которому строится сетка), внутри раунда — свежие. Форма нейтральная (`sides` + `sets` + `score_text`), так что матч двух подписок попадает в выдачу один раз, а карточка рисует обоих игроков и счёт по сетам без разбора строки. Пустых подписок → пустой массив, никогда `null`.
+- `weekly_highlights` — до 10 **завершённых** матчей: сначала матчи подписок за последние `highlights_days` дней (по умолчанию 7, максимум 365, `0` выключает блок). Порядок — правило экрана и потому серверное: сначала важные раунды (`rounds.sort_order`, тот же столбец, по которому строится сетка), внутри раунда — свежие. Форма нейтральная (`sides` + `sets` + `score_text`), так что матч двух подписок попадает в выдачу один раз, а карточка рисует обоих игроков и счёт по сетам без разбора строки. Пустых подписок → пустой массив, никогда `null`.
 
   Параметр окна нужен потому, что «последние 7 дней» — правильная семантика, но на отставшем снапшоте базы блок пуст: `?highlights_days=60` показывает секцию в разработке, не меняя смысл в проде.
+
+  Оставшиеся места добиваются последними раундами идущих турниров (тот же порядок), так что секция не пуста и у пользователя без подписок.
+
+**Главная v2** (спецификация «Rally — Home Screen»). Поля ниже добавлены к ответу, старые не тронуты. `?tz=` — часовой пояс пользователя (IANA, по умолчанию UTC, неизвестный → `400 bad_tz`): от него зависят «сегодня»/«вчера».
+
+- `today` — местная дата `2026-10-02`, относительно которой решено всё остальное.
+- `header_status` — какой статус в заголовке (§4.1, первое совпадение выигрывает). Сервер выбирает **вид**, текст собирает клиент (EN/RU, 12/24 ч, нейтральные формулировки при скрытых счетах):
+  `{"kind": "plays_today", "player": {"slug","first_name","last_name"}, "at": "…"}`. Виды: `title_day` (+`player`, `city`), `plays_today` (+`player`, `at`), `on_court` (+`count`), `semis_day`, `quarters_day` (+`city`), `champion_yesterday`, `lost_yesterday` (+`player`, `city`), `tournament_day` (+`city`, `day`), `final_day` (+`city`), `season`.
+- `tournaments` — идущие розыгрыши (и вчера закончившиеся, пока подписке нужна сетка), в порядке карусели: больше подписок → выше уровень → имя. Пусто — блок скрыт.
+  ```json
+  {"edition": "beijing_2026", "name": "China Open", "city": "Beijing", "category": "ATP 500",
+   "surface": "hard", "indoor": false, "start_date": "…", "end_date": "…", "day": 3, "total_days": 7,
+   "monogram": "C", "layout": "bracket", "followed_count": 4,
+   "next_match": {"match_id": 1, "round": "R16", "status": "scheduled", "scheduled_at": "…", "court": null},
+   "bracket": {
+     "columns": ["R16", "QF", "SF"],
+     "groups": [{"keys": ["R16-1"], "next_key": "QF-1"}, {"keys": ["R16-4"], "next_key": "QF-2"}],
+     "matches": [{"key": "R16-1", "match_id": 317613, "round": "R16", "status": "scheduled",
+                  "scheduled_at": "…", "court": null, "winner_side": null, "sets": [],
+                  "sides": [{"player": {"slug": "zverev", "first_name": "Alexander", "last_name": "Zverev",
+                                        "short_name": "Zverev", "display_name": "…", "photo_url": null,
+                                        "rank": 2, "followed": true}, "placeholder": null},
+                            {"player": null, "placeholder": "BU / DJO"}]}],
+     "end_node": {"kind": "pending", "round": "SF", "date": "2026-10-05"},
+     "note": {"kind": "in_round", "round": "R16", "count": 2, "more": 1},
+     "default_key": "R16-1"}}
+  ```
+  `layout: bracket` — в сетке есть подписка, вылетевшая не раньше суток назад или ещё играющая, и у розыгрыша есть дерево (`bracket_pos` из импорта PDF ATP); иначе `cover` и `bracket: null`. Срез (§5.4): колонка 1 — фокусные матчи подписок в самом раннем их раунде (финал не бывает колонкой 1: тогда SF → F → чемпион), сосед по вилке — если в нём подписка или дальше финал; не больше двух групп, и две — только если их матчи колонки 2 кормят один узел; остальные подписки — в `note.more`. Неизвестная сторона — плейсхолдер из кормящего матча: `"ZVE / SHA"` или `"TBD"`. `end_node`: `champion` (+`player`) или `pending` (+`date` — местная дата следующего раунда; `round: "W"` — после финала). `note.kind`: `champion` | `in_round` (3+ в раунде, или 2) | `could_meet` | `plays` (+`player`, `scheduled_at`) | `played`. `key` узла стабилен (`QF-3`); `match_id` — null у узла без строки в БД. `category` — из `tournament_editions.metadata` (импорт сетки берёт её из очков чемпиона в PDF), иначе из таблицы брендов.
+- `your_season[]` дополнительно: `first_name`, `last_name` и `last_match` — последний завершённый матч, если он был вчера или сегодня по `?tz=` (`Won the title · def. Hurkacz`); независим от `next_match`.
+- `player.season_rank_delta` и `all_players[].season_rank_delta` — ранг в первом снапшоте года минус текущий (`+2` — поднялся на два места), `null` без снапшота начала года.
 
 ### `GET /v1/widget?player_ids=...&tz=Europe/Belgrade`
 
@@ -243,7 +273,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - шапка: имя, описание, покрытие, `date_range` («13 – 23 Aug»), `location`, `country_code`;
 - `draw_status`: `awaiting_draw` | `drawn`; `draw_date` — дата жеребьёвки;
 - `court_image_url` — фото корта по покрытию (`hard` / `clay` / `grass`);
-- `rounds` — сетка слотами `top` / `bottom`: имя «C. Alcaraz», `flag`, `seed`, `winner`, `tbd`, `bracket_pos`;
+- `rounds` — сетка слотами `top` / `bottom`: имя «C. Alcaraz», `flag`, `seed`, `winner`, `tbd`, `bracket_pos`. У розыгрыша с импортированной сеткой (`bracket_pos` у всех матчей, коды `R128`…`F`) — все раунды до финала: узлы без строки в БД приходят как TBD/TBD с отрицательным `id`. Отменённые строки (`cancelled`) не показываются;
 - `entries` — заявочный лист (как раньше).
 
 При `awaiting_draw` `rounds` — пустой массив. `/draw` остаётся нейтральной формой матча для других клиентов.
