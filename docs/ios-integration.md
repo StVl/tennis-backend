@@ -264,6 +264,20 @@ to be partial rather than complete.
 
 ---
 
+## Feature flags
+
+Not part of the Live Activity, but fetch it on the same schedule (launch and foreground):
+
+```http
+GET /v1/config
+→ {"features": {"paid_subscriptions": false}}
+```
+
+No auth, no database: it answers even while the rest of the API is degraded. `paid_subscriptions` says
+whether paid subscriptions are on — show the paywall and paid features only when it is `true`. Treat a
+missing key or a failed request as `false`. The value changes only when the backend restarts, so caching
+it for the session is fine.
+
 ## Testing without waiting for real tennis
 
 **In production these are off** (`DEV_ENDPOINTS_ENABLED=false`), so testing against the deployed
