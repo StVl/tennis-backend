@@ -25,6 +25,9 @@ func NewRouter(pool *pgxpool.Pool, cfg HandlerConfig) http.Handler {
 	r.Get("/health", handler.Health)
 
 	r.Route("/v1", func(r chi.Router) {
+		// фича-флаги для клиента, без авторизации
+		r.Get("/config", handler.AppConfig)
+
 		// композитные: один запрос = один экран (замена config.json)
 		r.Get("/home", handler.Home)
 		r.Get("/widget", handler.Widget)

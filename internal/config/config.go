@@ -21,8 +21,11 @@ type Config struct {
 	// базе у людей нет.
 	ApplyLiveSchema  bool
 	LiveMatchesLimit int
-	Live             LiveConfig
-	Push             PushConfig
+	// Включены ли платные подписки. По умолчанию НЕТ: деплой без переменной не
+	// должен случайно включить оплату.
+	PaidSubscriptions bool
+	Live              LiveConfig
+	Push              PushConfig
 }
 
 func Load() (*Config, error) {
@@ -56,17 +59,18 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		HTTPPort:         httpPort,
-		DatabaseURL:      databaseURL,
-		TournamentsCron:  tournamentsCron,
-		PlayersCron:      playersCron,
-		UpdateTimeout:    updateTimeout,
-		DBMaxConns:       dbMaxConns,
-		DevEndpoints:     envBool("DEV_ENDPOINTS_ENABLED", false),
-		ApplyLiveSchema:  envBool("LIVE_SCHEMA_AUTO_APPLY", true),
-		LiveMatchesLimit: envInt("LIVE_MATCHES_LIMIT", 50),
-		Live:             live,
-		Push:             push,
+		HTTPPort:          httpPort,
+		DatabaseURL:       databaseURL,
+		TournamentsCron:   tournamentsCron,
+		PlayersCron:       playersCron,
+		UpdateTimeout:     updateTimeout,
+		DBMaxConns:        dbMaxConns,
+		DevEndpoints:      envBool("DEV_ENDPOINTS_ENABLED", false),
+		ApplyLiveSchema:   envBool("LIVE_SCHEMA_AUTO_APPLY", true),
+		LiveMatchesLimit:  envInt("LIVE_MATCHES_LIMIT", 50),
+		PaidSubscriptions: envBool("PAID_SUBSCRIPTIONS_ENABLED", false),
+		Live:              live,
+		Push:              push,
 	}, nil
 }
 

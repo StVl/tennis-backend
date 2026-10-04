@@ -29,6 +29,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 | `PLAYERS_CRON` | `0 */2 * * *` | расписание апдейтера игроков (пока заглушка) |
 | `UPDATE_TIMEOUT` | `5m` | таймаут одного прогона апдейтера |
 | `DEV_ENDPOINTS_ENABLED` | `false` | включает раздел `/v1/dev` — ручные триггеры live-статуса |
+| `PAID_SUBSCRIPTIONS_ENABLED` | `false` | включает платные подписки; флаг отдаётся клиенту в `GET /v1/config` |
 | `LIVE_MATCHES_LIMIT` | `50` | предохранитель на размер `/v1/users/me/live-matches` (не продуктовый потолок) |
 | `RUN_ONCE` | — | прогнать один джоб и выйти (`live-schedule`, `players`, `tournaments`); боевой рычаг «обновить сейчас» |
 
@@ -143,6 +144,15 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 |---|---|---|
 | `GET` | `/health` | пинг БД: `{"status":"ok"}` или 503 |
 | `GET` | `/hello` | smoke-тест |
+| `GET` | `/v1/config` | фича-флаги для клиента, без авторизации и без БД |
+
+### `GET /v1/config`
+
+```json
+{"features": {"paid_subscriptions": false}}
+```
+
+`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные.
 
 ## Композитные (один запрос = один экран)
 

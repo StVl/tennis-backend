@@ -21,6 +21,9 @@ type HandlerConfig struct {
 	// Для dev-эндпоинта повтора борта: те же значения, что у поллера.
 	LiveMatchWindow time.Duration
 	LiveMaxLiveAge  time.Duration
+	// Включены ли платные подписки. Клиент узнаёт об этом из /v1/config;
+	// платные ручки, когда появятся, гейтятся здесь же, в router.go.
+	PaidSubscriptions bool
 }
 
 type Handler struct {
