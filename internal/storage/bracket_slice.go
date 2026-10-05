@@ -25,6 +25,16 @@ type BracketSlice struct {
 	Matches []BracketMatch `json:"matches"`
 	// Бокс, выбранный при открытии (§5.5).
 	DefaultKey string `json:"default_key"`
+	// Свежие результаты подписок в этом розыгрыше (§10.1), в том числе вне среза: исход виден
+	// и по самой сетке — победитель уже стоит в следующем раунде, срез сдвинулся. Пока любой из
+	// них не раскрыт, клиент закрывает карточку целиком.
+	RecentResults []RecentResult `json:"recent_results"`
+}
+
+// RecentResult — сыгранный матч, по которому клиент проверяет раскрытие спойлера.
+type RecentResult struct {
+	MatchID int64    `json:"match_id"`
+	Sets    [][]*int `json:"sets"`
 }
 
 // BracketGroup — матчи колонки 1, кормящие один матч колонки 2.
@@ -291,7 +301,42 @@ func BuildBracketSlice(t *DrawTree, followed map[string]bool, now time.Time, loc
 		}
 	}
 	slice.DefaultKey = defaultKey(t, slice, focus)
+	slice.RecentResults = recentResults(t, followed, now)
 	return slice
+}
+
+// recentResults — последний сыгранный матч каждой подписки, если он не старше relevanceWindow.
+// Без времени матч считается свежим, как в relevantFollowed.
+func recentResults(t *DrawTree, followed map[string]bool, now time.Time) []RecentResult {
+	latest := map[string]*TreeMatch{}
+	for _, m := range t.Nodes {
+		if m.Status != "completed" {
+			continue
+		}
+		for _, s := range m.Sides {
+			if s == nil || !followed[s.Slug] {
+				continue
+			}
+			if cur := latest[s.Slug]; cur == nil || m.Depth < cur.Depth {
+				latest[s.Slug] = m
+			}
+		}
+	}
+	seen := map[int64]bool{}
+	out := []RecentResult{}
+	for _, m := range latest {
+		if seen[m.ID] || (m.ScheduledAt != nil && now.Sub(*m.ScheduledAt) > relevanceWindow) {
+			continue
+		}
+		seen[m.ID] = true
+		sets := m.Sets
+		if sets == nil {
+			sets = [][]*int{}
+		}
+		out = append(out, RecentResult{MatchID: m.ID, Sets: sets})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].MatchID < out[j].MatchID })
+	return out
 }
 
 func nodeHasFollowed(m *TreeMatch, followed map[string]bool) bool {

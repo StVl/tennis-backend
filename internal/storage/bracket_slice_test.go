@@ -213,3 +213,40 @@ func TestPlayerCodeAndShortName(t *testing.T) {
 		t.Errorf("short %q", got)
 	}
 }
+
+// Подписка сегодня выиграла QF: исход виден по самой сетке (ALC в полуфинале, срез сдвинулся
+// на SF), поэтому срез несёт этот матч в recent_results — клиент закроет карточку целиком.
+func TestSliceRecentResults(t *testing.T) {
+	qf := func() *TreeMatch {
+		return &TreeMatch{Depth: 2, Pos: 1, Status: "completed", ScheduledAt: at(-3), WinnerSide: side(1),
+			Sets: [][]*int{{side(6), side(4), nil}, {side(7), side(6), side(5)}}, Sides: [2]*TreePlayer{alc, kha}}
+	}
+	qf2 := func() *TreeMatch {
+		return &TreeMatch{Depth: 2, Pos: 2, ScheduledAt: at(4), Sides: [2]*TreePlayer{fri, hur}}
+	}
+
+	// строки полуфинала ещё нет — QF в срезе, в полуфинале плейсхолдер ALC
+	s := BuildBracketSlice(tree(qf(), qf2()), follows("alcaraz"), testNow, time.UTC)
+	if len(s.RecentResults) != 1 || s.RecentResults[0].MatchID != *box(t, s, "QF-1").MatchID {
+		t.Fatalf("recent_results: %+v", s.RecentResults)
+	}
+	if got := s.RecentResults[0].Sets; len(got) != 2 || *got[1][2] != 5 {
+		t.Fatalf("счёт: %+v", got)
+	}
+
+	// полуфинал записан — QF выпал из среза, но в recent_results остался
+	s = BuildBracketSlice(tree(qf(), qf2(), &TreeMatch{Depth: 1, Pos: 1, ScheduledAt: at(24),
+		Sides: [2]*TreePlayer{alc, nil}}), follows("alcaraz"), testNow, time.UTC)
+	if s.Columns[0] != "SF" || len(s.RecentResults) != 1 || s.RecentResults[0].MatchID != 100 {
+		t.Fatalf("сдвинутый срез: columns=%v recent=%+v", s.Columns, s.RecentResults)
+	}
+
+	// результат старше окна — не свежий; у подписки без сыгранных матчей список пуст, не null
+	old := qf()
+	old.ScheduledAt = at(-30)
+	s = BuildBracketSlice(tree(old, qf2(), &TreeMatch{Depth: 1, Pos: 1, ScheduledAt: at(24),
+		Sides: [2]*TreePlayer{alc, nil}}), follows("alcaraz"), testNow, time.UTC)
+	if s.RecentResults == nil || len(s.RecentResults) != 0 {
+		t.Fatalf("старый результат: %+v", s.RecentResults)
+	}
+}
