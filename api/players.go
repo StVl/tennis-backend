@@ -49,14 +49,14 @@ func (h *Handler) GetPlayer(w http.ResponseWriter, r *http.Request) {
 			}
 			resp.LastMatches = items
 		case "next_match":
-			items, err := storage.ListPlayerMatches(r.Context(), h.pool, slug, []string{"scheduled", "live"}, false, 1, 0)
+			// Тот же отбор, что у главной и виджета: без отсечки протухшая scheduled-строка
+			// недельной давности становилась «следующим матчем» на карточке игрока.
+			next, err := storage.NextMatch(r.Context(), h.pool, slug)
 			if err != nil {
 				respondQueryError(w, err)
 				return
 			}
-			if len(items) > 0 {
-				resp.NextMatch = &items[0]
-			}
+			resp.NextMatch = next
 		case "next_tournament":
 			items, err := storage.ListPlayerTournaments(r.Context(), h.pool, slug, []string{"upcoming"})
 			if err != nil {

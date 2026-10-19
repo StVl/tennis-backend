@@ -153,6 +153,19 @@ func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
 	return out, rows.Err()
 }
 
+// NextMatch — ближайший матч одного игрока с той же отсечкой протухших строк,
+// что у главной и виджета (nextMatchPerPlayer). nil — матча нет.
+func NextMatch(ctx context.Context, pool *pgxpool.Pool, slug string) (*PlayerMatch, error) {
+	matches, err := nextMatchPerPlayer(ctx, pool, []string{slug}, time.Now().Add(-liveStaleGrace))
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := matches[slug]; ok {
+		return &m, nil
+	}
+	return nil, nil
+}
+
 // nextTournamentPerPlayer — ближайший upcoming-турнир каждого игрока из списка.
 func nextTournamentPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string) (map[string]PlayerTournament, error) {
 	rows, err := pool.Query(ctx, `
