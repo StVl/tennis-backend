@@ -194,7 +194,17 @@ a card did or did not appear.
    - **one ours** → `live_unmatched('one_side_unresolved')`, and the lazy resolver may spend one
      request on `GET /players/{id}` — capped per cycle, negatively cached with growing backoff, and
      matched on name alone because `birth_date` and `country_code` are NULL for all players.
+     Candidates are only players of the **known side's gender** (`storage.PlayerGender`): a singles
+     match is single-sex, so a namesake in the other tour neither creates ambiguity nor gets mapped
+     — a man named Zheng can never become the opponent in a women's match.
    - **both ours** → `FindMatchByPlayers`.
+
+WTA rides the same path with no special case: the board already carries women's rows, and a women's
+match flips as soon as both players resolve. What WTA needs is mapping, not code —
+`db/live_external_ids.sql` holds the women's ids that the vendor's own data confirms (16 of the top
+50 as of 2026-10-22), the lazy resolver adds opponents of those, and `db/live_edition_ids.sql` maps
+the vendor's women's singles ids (1218, 1209) to `<brand>_wta_<year>` editions.
+`TestIngestFlipsWtaMatchFromRealBoard` replays a captured board and proves the flip end to end.
 6. `AppendObservation` with `run_id`, then `Derive`, then `applyAction`.
 7. **Absence sweep**, only after a successful poll: every held flag not seen this cycle gets a miss.
    Flags with `source='dev'` are exempt — a hand-flipped match can never appear on the vendor's board
