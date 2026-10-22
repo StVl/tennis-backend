@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func loadFeaturedTournament(ctx context.Context, pool *pgxpool.Pool, lang string, now time.Time) (*FeaturedTournament, error) {
+func loadFeaturedTournament(ctx context.Context, pool *pgxpool.Pool, lang string, now time.Time, tour Tour) (*FeaturedTournament, error) {
 	row := pool.QueryRow(ctx, `
 		select v.slug, t.slug, t.name, v.surface::text, v.status, v.start_date, v.end_date,
 		       v.draw_status::text, v.draw_date, t.location, t.country_code, t.logo_url,
@@ -19,11 +19,12 @@ func loadFeaturedTournament(ctx context.Context, pool *pgxpool.Pool, lang string
 		from v_tournament_editions v
 		join tournaments t on t.id = v.tournament_id
 		left join players ch on ch.id = v.champion_id
+		where v.gender::text = $1
 		order by
 		  case v.status when 'ongoing' then 0 when 'upcoming' then 1 else 2 end,
 		  case when v.status = 'upcoming' then v.start_date end asc nulls last,
 		  case when v.status = 'completed' then v.end_date end desc nulls last
-		limit 1`)
+		limit 1`, tour.Gender())
 
 	var (
 		edition, brand, name, surface, status, drawStatus, indoor string

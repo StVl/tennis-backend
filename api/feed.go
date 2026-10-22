@@ -54,9 +54,13 @@ func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tour, ok := tourParam(w, r)
+	if !ok {
+		return
+	}
 	feed, err := storage.GetHomeFeed(
 		r.Context(), h.pool, langParam(r), playerIDsParam(r), highlightsDaysParam(r), loc, time.Now(),
-		r.URL.Query().Has("tz"),
+		r.URL.Query().Has("tz"), tour,
 	)
 	if err != nil {
 		respondQueryError(w, err)

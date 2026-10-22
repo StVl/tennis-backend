@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseTour(t *testing.T) {
@@ -117,4 +119,100 @@ func intOrNil(p *int) any {
 		return nil
 	}
 	return *p
+}
+
+// homeTourFixture — совмещённый турнир zzt_slam: мужской и женский розыгрыш идут сегодня, у
+// каждого по матчу подписанного игрока.
+func homeTourFixture(t *testing.T, now time.Time) {
+	t.Helper()
+	tourFixture(t)
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `delete from tournaments where slug like 'zzt\_%'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	day, at := now.Format("2006-01-02"), now.Add(2*time.Hour)
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`insert into players (slug, display_name, gender) values
+		    ('zzt_atp_opp', 'Zzt Atp Opp', 'm'), ('zzt_wta_opp', 'Zzt Wta Opp', 'f')`, nil},
+		{`insert into tournaments (slug, name) values ('zzt_slam', 'Zzt Slam')`, nil},
+		{`insert into tournament_editions (tournament_id, year, slug, start_date, end_date, surface, gender)
+		  select t.id, 2026, v.slug, $1::date - 2, $1::date + 3, 'hard', v.g::gender_t
+		  from tournaments t, (values ('zzt_slam_2026', 'm'), ('zzt_slam_wta_2026', 'f')) v(slug, g)
+		  where t.slug = 'zzt_slam'`, []any{day}},
+		{`insert into matches (edition_id, round_code, scheduled_at, status, import_key)
+		  select te.id, 'R32', $1::timestamptz, 'scheduled', 'zzt_' || te.slug
+		  from tournament_editions te where te.slug in ('zzt_slam_2026', 'zzt_slam_wta_2026')`, []any{at}},
+		{`insert into match_participants (match_id, side, slot, player_id)
+		  select m.id, v.side, 1, p.id
+		  from (values ('zzt_zzt_slam_2026', 1, 'zzt_atp_man'), ('zzt_zzt_slam_2026', 2, 'zzt_atp_opp'),
+		               ('zzt_zzt_slam_wta_2026', 1, 'zzt_wta_woman'), ('zzt_zzt_slam_wta_2026', 2, 'zzt_wta_opp')
+		       ) v(key, side, slug)
+		  join matches m on m.import_key = v.key
+		  join players p on p.slug = v.slug`, nil},
+	} {
+		if _, err := pool.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatalf("фикстура главной: %v", err)
+		}
+	}
+}
+
+func TestHomeFeedFiltersByTour(t *testing.T) {
+	now := time.Now().UTC()
+	homeTourFixture(t, now)
+	pool := testPool(t)
+	followed := []string{"zzt_atp_man", "zzt_wta_woman"}
+
+	for _, c := range []struct {
+		tour             Tour
+		mine, other      string
+		edition, otherEd string
+	}{
+		{TourATP, "zzt_atp_man", "zzt_wta_woman", "zzt_slam_2026", "zzt_slam_wta_2026"},
+		{TourWTA, "zzt_wta_woman", "zzt_atp_man", "zzt_slam_wta_2026", "zzt_slam_2026"},
+	} {
+		feed, err := GetHomeFeed(context.Background(), pool, "en", followed, 7, time.UTC, now, true, c.tour)
+		if err != nil {
+			t.Fatalf("%s: %v", c.tour, err)
+		}
+		if len(feed.YourSeason) != 1 || feed.YourSeason[0].Player.Slug != c.mine {
+			var got []string
+			for _, s := range feed.YourSeason {
+				got = append(got, s.Player.Slug)
+			}
+			t.Errorf("%s: your_season = %v, want [%s]", c.tour, got, c.mine)
+		}
+		for _, p := range feed.AllPlayers {
+			if p.Tour != c.tour {
+				t.Errorf("%s: all_players содержит %s (%s)", c.tour, p.Slug, p.Tour)
+			}
+		}
+		editions := map[string]bool{}
+		for _, h := range feed.Tournaments {
+			editions[h.Edition] = true
+		}
+		if !editions[c.edition] || editions[c.otherEd] {
+			t.Errorf("%s: tournaments = %v, want %s без %s", c.tour, editions, c.edition, c.otherEd)
+		}
+		if f := feed.FeaturedTournament; f != nil && f.Edition == c.otherEd {
+			t.Errorf("%s: featured — розыгрыш другой лиги %s", c.tour, f.Edition)
+		}
+	}
+}
+
+func TestFollowsFilteredByTourKeepOrder(t *testing.T) {
+	tourFixture(t)
+	got, err := followedInTour(context.Background(), testPool(t),
+		[]string{"zzt_wta_new", "zzt_atp_man", "unknown", "zzt_wta_woman"}, TourWTA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "zzt_wta_new,zzt_wta_woman" {
+		t.Errorf("followedInTour = %v", got)
+	}
 }

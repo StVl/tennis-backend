@@ -121,7 +121,7 @@ func newHomeDay(now time.Time, loc *time.Location) homeDay {
 // loadHomeTournaments — идущие розыгрыши (и вчера закончившиеся — пока сетка нужна
 // подпискам) с раскладкой и срезом; плюс факты «день полуфиналов» для заголовка.
 func loadHomeTournaments(ctx context.Context, pool *pgxpool.Pool, followed []string,
-	day homeDay) ([]HomeTournament, []headerTournament, error) {
+	day homeDay, tour Tour) ([]HomeTournament, []headerTournament, error) {
 
 	todayDate := day.today.Format("2006-01-02")
 	rows, err := pool.Query(ctx, `
@@ -134,7 +134,8 @@ func loadHomeTournaments(ctx context.Context, pool *pgxpool.Pool, followed []str
 		from tournament_editions te
 		join tournaments t on t.id = te.tournament_id
 		where te.discipline = 'singles'
-		  and te.start_date <= $1::date and te.end_date >= $1::date - 1`, todayDate)
+		  and te.gender::text = $2
+		  and te.start_date <= $1::date and te.end_date >= $1::date - 1`, todayDate, tour.Gender())
 	if err != nil {
 		return nil, nil, err
 	}

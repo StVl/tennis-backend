@@ -370,13 +370,19 @@ func headerFactsFor(cards []SeasonCard, day homeDay, cityByEdition map[string]st
 // расширенные итоги недели; новые поля получают все, старые клиенты их игнорируют.
 // now — параметром ради тестов.
 //
+// tour — лига главной (?tour=, по умолчанию atp). Главные лиг не пересекаются: подписки,
+// ростер, турниры, итоги недели и заголовок — только этой лиги. Подписки общие на пользователя,
+// поэтому сюда приходят все, а отбираются здесь (followedInTour).
+//
 // Блоки новой главной не роняют ответ: их ошибка пишется в лог, а блок приходит пустым. Иначе
 // сбой нового запроса отнял бы главную и у старых клиентов, которым эти блоки не нужны.
 func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string,
-	highlightDays int, loc *time.Location, now time.Time, v2 bool) (*HomeFeed, error) {
-	// Пока главная одна, она мужская: клиенты до WTA не должны увидеть в сетке женщин.
-	atp := TourATP
-	roster, err := ListPlayers(ctx, pool, lang, true, "", &atp)
+	highlightDays int, loc *time.Location, now time.Time, v2 bool, tour Tour) (*HomeFeed, error) {
+	followed, err := followedInTour(ctx, pool, followed, tour)
+	if err != nil {
+		return nil, err
+	}
+	roster, err := ListPlayers(ctx, pool, lang, true, "", &tour)
 	if err != nil {
 		return nil, err
 	}
@@ -405,13 +411,13 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		})
 	}
 
-	featured, err := loadFeaturedTournament(ctx, pool, lang, now)
+	featured, err := loadFeaturedTournament(ctx, pool, lang, now, tour)
 	if err != nil {
 		return nil, err
 	}
 	feed.FeaturedTournament = featured
 
-	tournaments, tournamentFacts, err := loadHomeTournaments(ctx, pool, followed, day)
+	tournaments, tournamentFacts, err := loadHomeTournaments(ctx, pool, followed, day, tour)
 	if err != nil {
 		slog.Error("home v2: tournaments block failed, sending it empty", "error", err)
 		tournaments, tournamentFacts = []HomeTournament{}, nil
