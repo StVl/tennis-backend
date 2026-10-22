@@ -32,3 +32,23 @@ func TestAppConfigReportsPaidSubscriptions(t *testing.T) {
 		}
 	}
 }
+
+func TestAppConfigReportsWta(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		router := NewRouter(nil, HandlerConfig{WTA: enabled})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/config", nil))
+
+		var body map[string]map[string]bool
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("enabled=%v: decode %q: %v", enabled, rec.Body.String(), err)
+		}
+		got, ok := body["features"]["wta"]
+		if !ok {
+			t.Fatalf("enabled=%v: features.wta missing in %s", enabled, rec.Body.String())
+		}
+		if got != enabled {
+			t.Errorf("wta = %v, want %v", got, enabled)
+		}
+	}
+}

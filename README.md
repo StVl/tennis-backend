@@ -30,6 +30,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 | `UPDATE_TIMEOUT` | `5m` | таймаут одного прогона апдейтера |
 | `DEV_ENDPOINTS_ENABLED` | `false` | включает раздел `/v1/dev` — ручные триггеры live-статуса |
 | `PAID_SUBSCRIPTIONS_ENABLED` | `false` | включает платные подписки; флаг отдаётся клиенту в `GET /v1/config` |
+| `FEATURE_WTA` | `false` | показывает в приложении лигу WTA (переключатель лиг, табы онбординга); флаг `wta` в `GET /v1/config`. Данные WTA API отдаёт всегда |
 | `LIVE_MATCHES_LIMIT` | `50` | предохранитель на размер `/v1/users/me/live-matches` (не продуктовый потолок) |
 | `RUN_ONCE` | — | прогнать один джоб и выйти (`live-schedule`, `players`, `tournaments`); боевой рычаг «обновить сейчас» |
 
@@ -153,7 +154,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 {"features": {"paid_subscriptions": false}}
 ```
 
-`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные.
+`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные. `wta` — показывать ли лигу WTA (`FEATURE_WTA`, по умолчанию выключена).
 
 ## Композитные (один запрос = один экран)
 

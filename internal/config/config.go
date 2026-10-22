@@ -26,6 +26,8 @@ type Config struct {
 	PaidSubscriptions bool
 	Live              LiveConfig
 	Push              PushConfig
+	// Лига WTA в приложении. По умолчанию НЕТ: включается, когда WTA-данные живут в проде.
+	WTA bool
 }
 
 func Load() (*Config, error) {
@@ -69,6 +71,7 @@ func Load() (*Config, error) {
 		ApplyLiveSchema:   envBool("LIVE_SCHEMA_AUTO_APPLY", true),
 		LiveMatchesLimit:  envInt("LIVE_MATCHES_LIMIT", 50),
 		PaidSubscriptions: envBool("PAID_SUBSCRIPTIONS_ENABLED", false),
+		WTA:               envBool("FEATURE_WTA", false),
 		Live:              live,
 		Push:              push,
 	}, nil

@@ -202,6 +202,7 @@ func run() error {
 			LiveMatchWindow:   cfg.Live.MatchWindow,
 			LiveMaxLiveAge:    cfg.Live.MaxLiveAge,
 			PaidSubscriptions: cfg.PaidSubscriptions,
+			WTA:               cfg.WTA,
 		}),
 	}
 
