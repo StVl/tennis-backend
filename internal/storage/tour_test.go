@@ -83,6 +83,12 @@ func TestListPlayersRankUsesPlayerTour(t *testing.T) {
 			t.Errorf("%s: tour = %q, want %q", slug, it.Tour, tour)
 		}
 	}
+	// Один снапшот за сезон — изменение с начала сезона неизвестно (null), а не «0, на месте».
+	for slug, it := range got {
+		if it.SeasonRankDelta != nil {
+			t.Errorf("%s: season_rank_delta = %d при единственном снапшоте, want null", slug, *it.SeasonRankDelta)
+		}
+	}
 	seven, three := 7, 3
 	check("zzt_atp_man", &seven, TourATP)
 	check("zzt_wta_woman", &three, TourWTA)

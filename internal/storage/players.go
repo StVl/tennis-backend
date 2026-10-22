@@ -138,6 +138,9 @@ func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOn
 			select rs.rank from ranking_snapshots rs
 			where rs.player_id = p.id and rs.tour_code = tour_code_for(p.gender)
 			  and rs.snapshot_date >= date_trunc('year', r.snapshot_date)::date
+			  -- строго раньше текущего: единственный снапшот сезона — это «неизвестно» (null),
+			  -- а не «0, на месте» (так у WTA-ростера до первой недели истории)
+			  and rs.snapshot_date < r.snapshot_date
 			order by rs.snapshot_date limit 1
 		) ss on true
 		left join play_styles ps on ps.id = p.play_style_id
