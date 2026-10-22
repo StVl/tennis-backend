@@ -122,7 +122,7 @@ func UserLiveMatches(ctx context.Context, pool *pgxpool.Pool,
 			       order by mp.side, mp.slot) as j
 			from match_participants mp
 			join players p on p.id = mp.player_id
-			left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+			left join v_current_rankings r on r.player_id = p.id and r.tour_code = tour_code_for(p.gender)
 			where mp.match_id = m.id
 		) parts on true
 		where m.status = 'live'

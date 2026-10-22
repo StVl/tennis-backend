@@ -18,6 +18,7 @@ type PlayerListItem struct {
 	LastName  *string `json:"last_name"`
 	PhotoURL  *string `json:"photo_url"`
 	IsTracked bool    `json:"is_tracked"`
+	Tour      Tour    `json:"tour"` // тур игрока (по полу): им подписан ранг
 	Rank      *int    `json:"rank"`
 	RankDelta *int    `json:"rank_delta"`
 	// Изменение рейтинга с начала сезона: ранг в первом снапшоте года минус текущий
@@ -42,6 +43,7 @@ type PlayerDetail struct {
 	ProTip     *string         `json:"pro_tip"`
 	Links      json.RawMessage `json:"links"`
 	PlayStyle  *PlayStyleInfo  `json:"play_style"`
+	Tour       Tour            `json:"tour"`
 	Rank       *int            `json:"rank"`
 	RankDelta  *int            `json:"rank_delta"`
 	Points     *int            `json:"points"`
@@ -115,31 +117,38 @@ type H2H struct {
 	Matches []PlayerMatch `json:"matches"`
 }
 
-func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOnly bool, search string) ([]PlayerListItem, error) {
+// ListPlayers — tour == nil: оба тура (поиск, ?tracked=false); иначе только игроки этого тура.
+func ListPlayers(ctx context.Context, pool *pgxpool.Pool, lang string, trackedOnly bool, search string, tour *Tour) ([]PlayerListItem, error) {
+	var tourCode *string
+	if tour != nil {
+		s := string(*tour)
+		tourCode = &s
+	}
 	rows, err := pool.Query(ctx, `
 		select p.slug, p.display_name, nullif(p.first_name, ''), nullif(p.last_name, ''),
-		       p.photo_url, p.is_tracked,
+		       p.photo_url, p.is_tracked, tour_code_for(p.gender),
 		       r.rank, r.delta_vs_prev, ss.rank - r.rank,
 		       coalesce(ps.name->>$1, ps.name->>'en')
 		from players p
-		left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+		left join v_current_rankings r on r.player_id = p.id and r.tour_code = tour_code_for(p.gender)
 		left join lateral (
 			select rs.rank from ranking_snapshots rs
-			where rs.player_id = p.id and rs.tour_code = 'atp'
+			where rs.player_id = p.id and rs.tour_code = tour_code_for(p.gender)
 			  and rs.snapshot_date >= date_trunc('year', r.snapshot_date)::date
 			order by rs.snapshot_date limit 1
 		) ss on true
 		left join play_styles ps on ps.id = p.play_style_id
 		where (not $2 or p.is_tracked)
 		  and ($3 = '' or p.display_name ilike '%' || $3 || '%')
+		  and ($4::text is null or tour_code_for(p.gender) = $4)
 		order by coalesce(r.rank, 100000), p.display_name`,
-		lang, trackedOnly, search)
+		lang, trackedOnly, search, tourCode)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlayerListItem, error) {
 		var p PlayerListItem
-		err := row.Scan(&p.Slug, &p.Name, &p.FirstName, &p.LastName, &p.PhotoURL, &p.IsTracked, &p.Rank, &p.RankDelta,
+		err := row.Scan(&p.Slug, &p.Name, &p.FirstName, &p.LastName, &p.PhotoURL, &p.IsTracked, &p.Tour, &p.Rank, &p.RankDelta,
 			&p.SeasonRankDelta, &p.PlayStyle)
 		return p, err
 	})
@@ -162,17 +171,17 @@ func GetPlayer(ctx context.Context, pool *pgxpool.Pool, lang, slug string) (*Pla
 		       p.links::text,
 		       ps.slug, coalesce(ps.name->>$2, ps.name->>'en'),
 		       coalesce(ps.description->$2, ps.description->'en', ps.description->'ru')::text,
-		       r.rank, r.delta_vs_prev, r.points, r.race_points
+		       tour_code_for(p.gender), r.rank, r.delta_vs_prev, r.points, r.race_points
 		from players p
 		left join play_styles ps on ps.id = p.play_style_id
-		left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+		left join v_current_rankings r on r.player_id = p.id and r.tour_code = tour_code_for(p.gender)
 		where p.slug = $1`,
 		slug, lang).Scan(
 		&p.Slug, &p.Name, &p.FirstName, &p.LastName, &p.PhotoURL,
 		&p.BirthDate, &p.Hand, &p.HeightCm, &p.Country, &p.IsTracked,
 		&traits, &p.ProTip, &links,
 		&styleSlug, &styleName, &styleDesc,
-		&p.Rank, &p.RankDelta, &p.Points, &p.RacePoints)
+		&p.Tour, &p.Rank, &p.RankDelta, &p.Points, &p.RacePoints)
 	if err != nil {
 		return nil, err
 	}
@@ -256,8 +265,9 @@ func PlayerRankingHistory(ctx context.Context, pool *pgxpool.Pool, slug string) 
 	rows, err := pool.Query(ctx, `
 		select rs.snapshot_date, rs.rank, rs.points, rs.race_points
 		from ranking_snapshots rs
-		where rs.player_id = (select id from players where slug = $1)
-		  and rs.tour_code = 'atp'
+		join players p on p.id = rs.player_id
+		where p.slug = $1
+		  and rs.tour_code = tour_code_for(p.gender)
 		order by rs.snapshot_date`,
 		slug)
 	if err != nil {

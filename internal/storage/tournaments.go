@@ -189,7 +189,7 @@ func GetEdition(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug strin
 		select p.slug, p.display_name, p.photo_url, e.seed, e.status::text, r.rank
 		from tournament_entries e
 		join players p on p.id = e.player_id
-		left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+		left join v_current_rankings r on r.player_id = p.id and r.tour_code = tour_code_for(p.gender)
 		where e.edition_id = (select id from tournament_editions where slug = $1)
 		  and e.status is distinct from 'withdrawn'
 		order by coalesce(r.rank, 100000), p.display_name`,

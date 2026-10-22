@@ -207,10 +207,10 @@ func loadDrawTrees(ctx context.Context, pool *pgxpool.Pool, editions []string) (
 		join tournament_editions te on te.id = m.edition_id
 		left join match_participants mp1 on mp1.match_id = m.id and mp1.side = 1 and mp1.slot = 1
 		left join players p1 on p1.id = mp1.player_id
-		left join v_current_rankings r1 on r1.player_id = p1.id and r1.tour_code = 'atp'
+		left join v_current_rankings r1 on r1.player_id = p1.id and r1.tour_code = tour_code_for(p1.gender)
 		left join match_participants mp2 on mp2.match_id = m.id and mp2.side = 2 and mp2.slot = 1
 		left join players p2 on p2.id = mp2.player_id
-		left join v_current_rankings r2 on r2.player_id = p2.id and r2.tour_code = 'atp'
+		left join v_current_rankings r2 on r2.player_id = p2.id and r2.tour_code = tour_code_for(p2.gender)
 		where te.slug = any($1)
 		  and m.bracket_pos is not null
 		  and m.status <> 'cancelled'

@@ -44,6 +44,7 @@ type GridPlayer struct {
 	FirstName *string `json:"first_name"`
 	LastName  *string `json:"last_name"`
 	PhotoURL  *string `json:"photo_url"`
+	Tour      Tour    `json:"tour"`
 	Rank      *int    `json:"rank"`       // null, если нет свежего снапшота в v_current_rankings
 	RankDelta *int    `json:"rank_delta"` // к предыдущему снапшоту
 	// С начала сезона: ранг в первом снапшоте года минус текущий (+2 — поднялся на два места).
@@ -373,7 +374,9 @@ func headerFactsFor(cards []SeasonCard, day homeDay, cityByEdition map[string]st
 // сбой нового запроса отнял бы главную и у старых клиентов, которым эти блоки не нужны.
 func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string,
 	highlightDays int, loc *time.Location, now time.Time, v2 bool) (*HomeFeed, error) {
-	roster, err := ListPlayers(ctx, pool, lang, true, "")
+	// Пока главная одна, она мужская: клиенты до WTA не должны увидеть в сетке женщин.
+	atp := TourATP
+	roster, err := ListPlayers(ctx, pool, lang, true, "", &atp)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +400,7 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		rosterBySlug[p.Slug] = p
 		feed.AllPlayers = append(feed.AllPlayers, GridPlayer{
 			Slug: p.Slug, Name: p.Name, FirstName: p.FirstName, LastName: p.LastName, PhotoURL: p.PhotoURL,
-			Rank: p.Rank, RankDelta: p.RankDelta, SeasonRankDelta: p.SeasonRankDelta,
+			Tour: p.Tour, Rank: p.Rank, RankDelta: p.RankDelta, SeasonRankDelta: p.SeasonRankDelta,
 			Followed: followedSet[p.Slug],
 		})
 	}
@@ -519,7 +522,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 	if len(followed) == 0 {
 		return feed, nil
 	}
-	roster, err := ListPlayers(ctx, pool, "en", false, "")
+	roster, err := ListPlayers(ctx, pool, "en", false, "", nil)
 	if err != nil {
 		slog.Error("widget: season cards failed, sending none", "error", err)
 		return feed, nil

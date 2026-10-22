@@ -339,7 +339,7 @@ func PushCardFor(ctx context.Context, pool *pgxpool.Pool, matchID int64) (PushCa
 		         -- tour_code обязателен: без него игрок с рейтингом в двух турах
 		         -- даёт две строки json_agg, то есть дубль игрока в карточке.
 		         left join v_current_rankings r
-		                on r.player_id = p.id and r.tour_code = 'atp'
+		                on r.player_id = p.id and r.tour_code = tour_code_for(p.gender)
 		         where mp.match_id = m.id), '[]')::text
 		from matches m
 		join tournament_editions te on te.id = m.edition_id
