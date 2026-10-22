@@ -19,7 +19,8 @@ type HomeTournament struct {
 	Name        string  `json:"name"`
 	City        *string `json:"city"`
 	CountryCode *string `json:"country_code"`
-	// ATP 250 | ATP 500 | ATP 1000 | Grand Slam | ATP Finals; null — неизвестно.
+	// ATP 250 | ATP 500 | ATP 1000 | ATP Finals | WTA 250 | WTA 500 | WTA 1000 | WTA Finals |
+	// Grand Slam; null — неизвестно.
 	Category  *string   `json:"category"`
 	Surface   string    `json:"surface"` // hard | clay | grass
 	Indoor    bool      `json:"indoor"`
@@ -45,8 +46,24 @@ type HomeNextMatch struct {
 }
 
 // categoryByBrand — уровень турнира, пока импорт сетки не записал его в
-// tournament_editions.metadata (там он берётся из очков чемпиона в PDF ATP).
-var categoryByBrand = map[string]string{
+// tournament_editions.metadata (там он берётся из очков чемпиона в PDF).
+// По туру: у совмещённого бренда мужской и женский розыгрыш разного уровня (Мадрид — ATP 1000
+// и WTA 1000, Вашингтон — ATP 500 и WTA 500). Бренда нет в карте тура — категория неизвестна,
+// а не взята у другого тура.
+var categoryByBrand = map[Tour]map[string]string{TourATP: categoryByBrandATP, TourWTA: categoryByBrandWTA}
+
+// categoryByBrandWTA — WTA 1000 2026 года, шлемы и известные 500-е. Чисто женские бренды —
+// по слагу, который им даёт шард турниров.
+var categoryByBrandWTA = map[string]string{
+	"australian_open": "Grand Slam", "roland_garros": "Grand Slam", "wimbledon": "Grand Slam", "us_open": "Grand Slam",
+	"wta_finals": "WTA Finals",
+	"doha":       "WTA 1000", "dubai": "WTA 1000", "indian_wells": "WTA 1000", "miami": "WTA 1000",
+	"madrid": "WTA 1000", "rome": "WTA 1000", "canada": "WTA 1000", "cincinnati": "WTA 1000",
+	"beijing": "WTA 1000", "wuhan": "WTA 1000",
+	"washington": "WTA 500", "eastbourne": "WTA 500",
+}
+
+var categoryByBrandATP = map[string]string{
 	"australian_open": "Grand Slam", "roland_garros": "Grand Slam", "wimbledon": "Grand Slam", "us_open": "Grand Slam",
 	"atp_finals":   "ATP Finals",
 	"indian_wells": "ATP 1000", "miami": "ATP 1000", "monte_carlo": "ATP 1000", "madrid": "ATP 1000",
@@ -61,7 +78,24 @@ var categoryByBrand = map[string]string{
 	"winston_salem": "ATP 250",
 }
 
-var categoryWeight = map[string]int{"Grand Slam": 5, "ATP Finals": 4, "ATP 1000": 3, "ATP 500": 2, "ATP 250": 1}
+var categoryWeight = map[string]int{
+	"Grand Slam": 5,
+	"ATP Finals": 4, "WTA Finals": 4,
+	"ATP 1000": 3, "WTA 1000": 3,
+	"ATP 500": 2, "WTA 500": 2,
+	"ATP 250": 1, "WTA 250": 1,
+}
+
+// homeCategory — категория розыгрыша: из metadata (импорт сетки), иначе из карты тура.
+func homeCategory(brand string, tour Tour, meta *string) *string {
+	if meta != nil && *meta != "" {
+		return meta
+	}
+	if c, ok := categoryByBrand[tour][brand]; ok {
+		return &c
+	}
+	return nil
+}
 
 // localDay — номер дня турнира по местной дате пользователя.
 func localDay(today, start, end time.Time) (n, total int) {
@@ -160,14 +194,7 @@ func loadHomeTournaments(ctx context.Context, pool *pgxpool.Pool, followed []str
 		if s := strings.ToLower(h.Surface); s != "clay" && s != "grass" {
 			h.Surface = "hard"
 		}
-		if category == nil || *category == "" {
-			if c, ok := categoryByBrand[brand]; ok {
-				category = &c
-			} else {
-				category = nil
-			}
-		}
-		h.Category = category
+		h.Category = homeCategory(brand, tour, category)
 		h.Monogram = tournamentMonogram(brand, h.Name)
 		h.Day, h.TotalDays = localDay(day.today, h.StartDate, h.EndDate)
 		ts = append(ts, h)

@@ -701,7 +701,7 @@ func widgetRows(ctx context.Context, pool *pgxpool.Pool, followed []string, loc 
 // playerHeadersBySlug — slug/имя/фото для строк виджета.
 func playerHeadersBySlug(ctx context.Context, pool *pgxpool.Pool, slugs []string) (map[string]Opponent, error) {
 	rows, err := pool.Query(ctx,
-		`select slug, display_name, photo_url from players where slug = any($1)`, slugs)
+		`select slug, display_name, photo_url, tour_code_for(gender) from players where slug = any($1)`, slugs)
 	if err != nil {
 		return nil, err
 	}
@@ -709,7 +709,7 @@ func playerHeadersBySlug(ctx context.Context, pool *pgxpool.Pool, slugs []string
 	type row struct{ o Opponent }
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var x row
-		err := r.Scan(&x.o.Slug, &x.o.Name, &x.o.PhotoURL)
+		err := r.Scan(&x.o.Slug, &x.o.Name, &x.o.PhotoURL, &x.o.Tour)
 		return x, err
 	})
 	if err != nil {

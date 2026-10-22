@@ -73,7 +73,7 @@ func loadFeaturedTournament(ctx context.Context, pool *pgxpool.Pool, lang string
 		surface:      surface,
 		indoor:       strings.EqualFold(indoor, "true"),
 		championLast: championLast,
-		category:     tournamentCategory(brand),
+		category:     tournamentCategory(brand, tour),
 	}
 	title, meta, stage := featuredCopy(in)
 	surf := strings.ToLower(surface)

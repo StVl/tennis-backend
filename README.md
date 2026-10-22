@@ -137,7 +137,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - Время — ISO 8601 с таймзоной. Параметр `?tz=Area/City` задаёт, в какой таймзоне считать «сегодня».
 - Пагинация: `?limit=` (default 50) и `?offset=`.
 - Ошибки: HTTP-статус + `{"error": {"code": "not_found", "message": "..."}}`.
-- **Лиги ATP и WTA.** Тур игрока выводится из его пола (`m` → `atp`, `f` → `wta`). Рейтинг игрока — всегда рейтинг его тура. Каждый тип с рангом (`/v1/players`, `/v1/players/{slug}`, `all_players[]`, `your_season[].player`, `/v1/users/me/follows`) отдаёт поле `tour: "atp" | "wta"`. Экраны лиги принимают `?tour=atp|wta` (по умолчанию `atp` — клиенты до WTA видят ровно то же, что раньше). Неизвестное значение → `400 bad_tour`. Женский розыгрыш совмещённого турнира имеет свой слаг: `wimbledon_wta_2026`.
+- **Лиги ATP и WTA.** Тур игрока выводится из его пола (`m` → `atp`, `f` → `wta`). Рейтинг игрока — всегда рейтинг его тура. Каждый тип с рангом (`/v1/players`, `/v1/players/{slug}`, `all_players[]`, `your_season[].player`, `/v1/users/me/follows`) отдаёт поле `tour: "atp" | "wta"`. Экраны лиги принимают `?tour=atp|wta` (по умолчанию `atp` — клиенты до WTA видят ровно то же, что раньше). Неизвестное значение → `400 bad_tour`. Женский розыгрыш совмещённого турнира имеет свой слаг: `wimbledon_wta_2026`. Категории турниров у WTA свои (`WTA 250/500/1000`, `WTA Finals`; шлем — `Grand Slam` у обоих). Виджет (`/v1/widget`, `/v1/users/me/widget`) — общий: строки и `season` из подписок обеих лиг одной лентой, у `rows[].player` есть `tour`.
 
 ## Сервисные
 

@@ -75,6 +75,9 @@ type Opponent struct {
 	Slug     string  `json:"slug"`
 	Name     string  `json:"name"`
 	PhotoURL *string `json:"photo_url"`
+	// Тур игрока — только у player строки виджета: виджет общий для обеих лиг, по туру клиент
+	// открывает нужную главную и подписывает ранг.
+	Tour Tour `json:"tour,omitempty"`
 }
 
 // PlayerTournament — заявка игрока на розыгрыш.

@@ -216,3 +216,57 @@ func TestFollowsFilteredByTourKeepOrder(t *testing.T) {
 		t.Errorf("followedInTour = %v", got)
 	}
 }
+
+func TestTournamentCategoryByTour(t *testing.T) {
+	str := func(s string) *string { return &s }
+	cases := []struct {
+		brand string
+		tour  Tour
+		meta  *string
+		want  *string
+	}{
+		{"madrid", TourATP, nil, str("ATP 1000")},
+		{"madrid", TourWTA, nil, str("WTA 1000")},
+		{"wimbledon", TourWTA, nil, str("Grand Slam")},
+		{"washington", TourWTA, nil, str("WTA 500")},
+		{"zzt_unknown", TourWTA, str("WTA 250"), str("WTA 250")},
+		{"madrid", TourATP, str("ATP 500"), str("ATP 500")},
+		{"zzt_unknown", TourWTA, nil, nil},
+		{"chengdu", TourWTA, nil, nil}, // мужской 250 не становится женским
+	}
+	for _, c := range cases {
+		got := homeCategory(c.brand, c.tour, c.meta)
+		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+			t.Errorf("homeCategory(%s, %s, %v) = %v, want %v", c.brand, c.tour, c.meta, got, c.want)
+		}
+	}
+	if categoryWeight["WTA 1000"] != categoryWeight["ATP 1000"] || categoryWeight["WTA 250"] != categoryWeight["ATP 250"] {
+		t.Error("веса WTA-категорий должны совпадать с ATP-аналогами")
+	}
+	if tournamentCategory("madrid", TourWTA) != "WTA 1000" || tournamentCategory("madrid", TourATP) != "Masters 1000" {
+		t.Error("tournamentCategory: madrid → Masters 1000 у ATP, WTA 1000 у WTA")
+	}
+}
+
+func TestWidgetFeedMixesTours(t *testing.T) {
+	now := time.Now().UTC()
+	homeTourFixture(t, now)
+	feed, err := GetWidgetFeed(context.Background(), testPool(t), []string{"zzt_atp_man", "zzt_wta_woman"}, time.UTC, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tours := map[string]Tour{}
+	for _, r := range feed.Rows {
+		tours[r.Player.Slug] = r.Player.Tour
+	}
+	if tours["zzt_atp_man"] != TourATP || tours["zzt_wta_woman"] != TourWTA {
+		t.Errorf("rows: %v, want обе лиги с верным tour (state %s)", tours, feed.State)
+	}
+	cards := map[string]Tour{}
+	for _, c := range feed.Season {
+		cards[c.Player.Slug] = c.Player.Tour
+	}
+	if cards["zzt_atp_man"] != TourATP || cards["zzt_wta_woman"] != TourWTA {
+		t.Errorf("season: %v, want обе лиги", cards)
+	}
+}
