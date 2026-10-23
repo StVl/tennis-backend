@@ -81,7 +81,7 @@ const matchSelect = `
 		       order by mp.side, mp.slot) as j
 		from match_participants mp
 		join players p on p.id = mp.player_id
-		left join v_current_rankings r on r.player_id = p.id and r.tour_code = 'atp'
+		left join v_current_rankings r on r.player_id = p.id and r.tour_code = tour_code_for(p.gender)
 		where mp.match_id = m.id
 	) parts on true
 	left join lateral (
@@ -121,7 +121,8 @@ func ListMatches(ctx context.Context, pool *pgxpool.Pool, f MatchFilter) ([]Matc
 	left join lateral (
 		select min(r2.rank) as best_rank
 		from match_participants mp3
-		join v_current_rankings r2 on r2.player_id = mp3.player_id and r2.tour_code = 'atp'
+		join players p3 on p3.id = mp3.player_id
+		join v_current_rankings r2 on r2.player_id = mp3.player_id and r2.tour_code = tour_code_for(p3.gender)
 		where mp3.match_id = m.id
 	) br on true`
 	}

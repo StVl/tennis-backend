@@ -162,7 +162,28 @@ from (values
     ('197', 'vallejo', false),                   --         Daniel Adolfo Vallejo  [last_name]
     ('232', 'van_assche', true),                 --         Luca van Assche  [last_name]
     ('501', 'virtanen', false),                  --         Otto Virtanen  [last_name]
-    ('446', 'wu_yibing', true)                   --         Yibing Wu  [token_set]
+    ('446', 'wu_yibing', true),                  --         Yibing Wu  [token_set]
+    -- WTA (2026-10-22): игроки женского топ-50 (scripts/seed_wta_roster.py в tennis-data-storage),
+    -- найденные в бортах самого источника (internal/livesource/testdata, август 2026) с
+    -- tour = "wta" и полным совпадением имени. Остальные 34 сюда не вписаны: без собственного
+    -- ответа источника их id — догадка. Их доберёт ленивый резолвер (матч против известной
+    -- соперницы) или поиск по API источника, который стоит квоты.
+    ('679', 'bartunkova', true),              -- tracked WTA Nikola Bartunkova  [full_name, board 2026-08]
+    ('454', 'bouzkova', true),                -- tracked WTA Marie Bouzkova  [full_name, board 2026-08]
+    ('894', 'chwalinska', true),              -- tracked WTA Maja Chwalinska  [full_name, board 2026-08]
+    ('42', 'gauff', true),                    -- tracked WTA Coco Gauff  [full_name, board 2026-08]
+    ('52', 'gibson', true),                   -- tracked WTA Talia Gibson  [full_name, board 2026-08]
+    ('649', 'li', true),                      -- tracked WTA Ann Li  [full_name, board 2026-08]
+    ('61', 'muchova', true),                  -- tracked WTA Karolina Muchova  [full_name, board 2026-08]
+    ('39', 'ostapenko', true),                -- tracked WTA Jelena Ostapenko  [full_name, board 2026-08]
+    ('854', 'parry', true),                   -- tracked WTA Diane Parry  [full_name, board 2026-08]
+    ('50', 'pegula', true),                   -- tracked WTA Jessica Pegula  [full_name, board 2026-08]
+    ('53', 'qinwen_zheng', true),             -- tracked WTA Qinwen Zheng  [full_name, board 2026-08]
+    ('1003', 'samsonova', true),              -- tracked WTA Liudmila Samsonova  [full_name, board 2026-08]
+    ('304', 'starodubtseva', true),           -- tracked WTA Yuliia Starodubtseva  [full_name, board 2026-08]
+    ('889', 'swiatek', true),                 -- tracked WTA Iga Swiatek  [full_name, board 2026-08]
+    ('488', 'tjen', true),                    -- tracked WTA Janice Tjen  [full_name, board 2026-08]
+    ('249', 'vekic', true)                    -- tracked WTA Donna Vekic  [full_name, board 2026-08]
 ) as v(external_key, slug, confirmed)
 join players p on p.slug = v.slug
 on conflict (source, entity_type, external_key) do nothing;

@@ -44,7 +44,7 @@ Code comments and README are in Russian; match that when editing existing files.
 
 The service is read-mostly and leans heavily on views defined in the other repo — treat these names as a hard dependency:
 
-- `v_current_rankings` — current rank/points/`delta_vs_prev`, always joined with `tour_code = 'atp'`.
+- `v_current_rankings` — current rank/points/`delta_vs_prev`, always joined on the player's own tour: `r.tour_code = tour_code_for(p.gender)` (`m → atp`, `f → wta`; the function lives in the schema). Never a literal `'atp'` — a WTA player would get no rank. `storage.Tour` is the Go side of the same mapping and the `tour` field on every rank-bearing JSON type.
 - `v_player_matches` — the "player's-eye view" of a match: `opponent_id`, `result` (won/lost), `score_text` from that player's side. Every player-scoped match query goes through it.
 - `v_tournament_editions` — editions with `status` (upcoming/ongoing/completed) **computed from dates**; status is never stored or filtered in Go.
 

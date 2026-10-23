@@ -144,16 +144,16 @@ func surfaceLabel(lang, surface string, indoor bool) string {
 	}
 }
 
-func tournamentCategory(slug string) string {
-	switch slug {
-	case "australian_open", "roland_garros", "wimbledon", "us_open":
-		return "Grand Slam"
-	case "indian_wells", "miami", "monte_carlo", "madrid", "rome",
-		"canada", "cincinnati", "shanghai", "paris_masters":
+// tournamentCategory — уровень для подписи featured-турнира: «Masters 1000» у ATP (так
+// подписывает сама ATP), «WTA 1000» у WTA; шлем — у обоих. Ниже 1000 не подписывается.
+func tournamentCategory(slug string, tour Tour) string {
+	switch c := categoryByBrand[tour][slug]; c {
+	case "Grand Slam", "WTA 1000":
+		return c
+	case "ATP 1000":
 		return "Masters 1000"
-	default:
-		return ""
 	}
+	return ""
 }
 
 func tournamentMonogram(slug, name string) string {

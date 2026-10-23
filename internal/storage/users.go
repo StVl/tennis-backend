@@ -36,6 +36,7 @@ type Follow struct {
 	Slug       string    `json:"slug"`
 	Name       string    `json:"name"`
 	PhotoURL   *string   `json:"photo_url"`
+	Tour       Tour      `json:"tour"` // клиент считает бесплатный лимит по лиге
 	FollowedAt time.Time `json:"followed_at"`
 }
 
@@ -108,7 +109,7 @@ func GetProfile(ctx context.Context, pool *pgxpool.Pool, userID string) (*Profil
 // ListFollows — подписки пользователя в порядке добавления.
 func ListFollows(ctx context.Context, pool *pgxpool.Pool, userID string) ([]Follow, error) {
 	rows, err := pool.Query(ctx, `
-		select p.slug, p.display_name, p.photo_url, f.created_at
+		select p.slug, p.display_name, p.photo_url, tour_code_for(p.gender), f.created_at
 		from follows f
 		join players p on p.id = f.player_id
 		where f.user_id = $1
@@ -119,7 +120,7 @@ func ListFollows(ctx context.Context, pool *pgxpool.Pool, userID string) ([]Foll
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Follow, error) {
 		var f Follow
-		err := row.Scan(&f.Slug, &f.Name, &f.PhotoURL, &f.FollowedAt)
+		err := row.Scan(&f.Slug, &f.Name, &f.PhotoURL, &f.Tour, &f.FollowedAt)
 		return f, err
 	})
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"github.com/StVl/tennis-backend/internal/storage"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,6 +27,17 @@ func respondQueryError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal", err.Error())
+}
+
+// tourParam — ?tour= (atp | wta). Пусто — atp: клиенты до WTA параметр не шлют.
+// Неизвестное значение — false, ответ уже записан (400 bad_tour).
+func tourParam(w http.ResponseWriter, r *http.Request) (storage.Tour, bool) {
+	tour, ok := storage.ParseTour(r.URL.Query().Get("tour"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_tour", "tour must be atp or wta")
+		return "", false
+	}
+	return tour, true
 }
 
 func langParam(r *http.Request) string {

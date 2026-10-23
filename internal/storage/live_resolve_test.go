@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	livedb "github.com/StVl/tennis-backend/db"
 )
 
 func TestNormalizeName(t *testing.T) {
@@ -32,36 +34,36 @@ func TestMatchPlayerByName(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
-	var name, lastName string
+	var name, lastName, gender string
 	if err := pool.QueryRow(ctx, `
-		select display_name, coalesce(last_name, '') from players
+		select display_name, coalesce(last_name, ''), gender::text from players
 		where is_tracked and last_name is not null
 		  and (select count(*) from players p2 where p2.is_tracked
 		       and lower(p2.last_name) = lower(players.last_name)) = 1
-		order by id limit 1`).Scan(&name, &lastName); err != nil {
+		order by id limit 1`).Scan(&name, &lastName, &gender); err != nil {
 		t.Skipf("нет подходящего игрока: %v", err)
 	}
 
 	t.Run("точное имя", func(t *testing.T) {
-		if _, err := MatchPlayerByName(ctx, pool, name); err != nil {
+		if _, err := MatchPlayerByName(ctx, pool, name, gender); err != nil {
 			t.Fatalf("не нашли %q: %v", name, err)
 		}
 	})
 
 	t.Run("уникальная фамилия", func(t *testing.T) {
-		if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); err != nil {
+		if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName, gender); err != nil {
 			t.Fatalf("не нашли по фамилии %q: %v", lastName, err)
 		}
 	})
 
 	t.Run("выдуманное имя — отказ, а не ближайший", func(t *testing.T) {
-		if _, err := MatchPlayerByName(ctx, pool, "Zzyzx Qqqqq"); !errors.Is(err, ErrNoConfidentMatch) {
+		if _, err := MatchPlayerByName(ctx, pool, "Zzyzx Qqqqq", gender); !errors.Is(err, ErrNoConfidentMatch) {
 			t.Fatalf("err = %v, ожидался отказ", err)
 		}
 	})
 
 	t.Run("пустое имя — отказ", func(t *testing.T) {
-		if _, err := MatchPlayerByName(ctx, pool, "   "); !errors.Is(err, ErrNoConfidentMatch) {
+		if _, err := MatchPlayerByName(ctx, pool, "   ", gender); !errors.Is(err, ErrNoConfidentMatch) {
 			t.Fatalf("err = %v, ожидался отказ", err)
 		}
 	})
@@ -190,33 +192,34 @@ func TestMatchPlayerRefusesOnUntrackedNamesake(t *testing.T) {
 	var (
 		trackedID int64
 		lastName  string
+		gender    string
 	)
 	if err := pool.QueryRow(ctx, `
-		select id, last_name from players
+		select id, last_name, gender::text from players
 		where is_tracked and last_name is not null
 		  and (select count(*) from players p2 where lower(p2.last_name) = lower(players.last_name)) = 1
-		order by id limit 1`).Scan(&trackedID, &lastName); err != nil {
+		order by id limit 1`).Scan(&trackedID, &lastName, &gender); err != nil {
 		t.Skipf("нет игрока с уникальной фамилией: %v", err)
 	}
 
 	// до появления однофамильца — привязка находится
-	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); err != nil {
+	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName, gender); err != nil {
 		t.Fatalf("до однофамильца должно находиться: %v", err)
 	}
 
 	// заводим НЕотслеживаемого однофамильца
 	var namesakeID int64
 	if err := pool.QueryRow(ctx, `
-		insert into players (slug, display_name, last_name, is_tracked)
-		values ($1, $2, $3, false) returning id`,
-		"test-namesake-zz", "Other "+lastName, lastName).Scan(&namesakeID); err != nil {
+		insert into players (slug, display_name, last_name, gender, is_tracked)
+		values ($1, $2, $3, $4::gender_t, false) returning id`,
+		"test-namesake-zz", "Other "+lastName, lastName, gender).Scan(&namesakeID); err != nil {
 		t.Fatalf("создание однофамильца: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `delete from players where id = $1`, namesakeID)
 	})
 
-	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); !errors.Is(err, ErrNoConfidentMatch) {
+	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName, gender); !errors.Is(err, ErrNoConfidentMatch) {
 		t.Fatalf("err = %v: однофамилец обязан приводить к отказу, даже если он "+
 			"не отслеживается — иначе карточка уйдёт не тому игроку", err)
 	}
@@ -229,20 +232,20 @@ func TestMatchPlayerRefusesSingleWordVendorName(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
-	var lastName string
+	var lastName, gender string
 	if err := pool.QueryRow(ctx, `
-		select last_name from players
+		select last_name, gender::text from players
 		where is_tracked and last_name is not null
 		  and (select count(*) from players p2 where lower(p2.last_name) = lower(players.last_name)) = 1
-		order by id limit 1`).Scan(&lastName); err != nil {
+		order by id limit 1`).Scan(&lastName, &gender); err != nil {
 		t.Skipf("нет игрока с уникальной фамилией: %v", err)
 	}
 
-	if _, err := MatchPlayerByName(ctx, pool, lastName); !errors.Is(err, ErrNoConfidentMatch) {
+	if _, err := MatchPlayerByName(ctx, pool, lastName, gender); !errors.Is(err, ErrNoConfidentMatch) {
 		t.Fatalf("err = %v: одна фамилия без имени — недостаточное доказательство", err)
 	}
 	// а с именем — находится
-	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName); err != nil {
+	if _, err := MatchPlayerByName(ctx, pool, "Someone "+lastName, gender); err != nil {
 		t.Fatalf("с двумя словами должно находиться: %v", err)
 	}
 }
@@ -278,5 +281,87 @@ func TestResolveEditionsIgnoresUnconfirmed(t *testing.T) {
 	}
 	if _, ok := got["guessed-1"]; ok {
 		t.Fatal("неподтверждённая привязка резолвится: догадка создаст матч в чужой сетке")
+	}
+}
+
+// Одиночный матч однополый: неизвестный игрок ищется только среди игроков пола известного
+// соперника. Однофамилец другого пола не создаёт неоднозначности и не может быть привязан.
+func TestResolveRespectsGender(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := func() { _, _ = pool.Exec(ctx, `delete from players where slug like 'zzr\_%'`) }
+	cleanup()
+	t.Cleanup(cleanup)
+	if _, err := pool.Exec(ctx, `
+		insert into players (slug, display_name, first_name, last_name, gender) values
+		  ('zzr_twin_m', 'Kim Zzrtwin', 'Kim', 'Zzrtwin', 'm'),
+		  ('zzr_twin_f', 'Kim Zzrtwin', 'Kim', 'Zzrtwin', 'f'),
+		  ('zzr_solo_m', 'Lee Zzrsolo', 'Lee', 'Zzrsolo', 'm')`); err != nil {
+		t.Fatal(err)
+	}
+	idOf := func(slug string) int64 {
+		var id int64
+		if err := pool.QueryRow(ctx, `select id from players where slug = $1`, slug).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	got, err := MatchPlayerByName(ctx, pool, "Kim Zzrtwin", "f")
+	if err != nil || got != idOf("zzr_twin_f") {
+		t.Errorf("женский матч: %d, %v; want zzr_twin_f", got, err)
+	}
+	got, err = MatchPlayerByName(ctx, pool, "Kim Zzrtwin", "m")
+	if err != nil || got != idOf("zzr_twin_m") {
+		t.Errorf("мужской матч: %d, %v; want zzr_twin_m", got, err)
+	}
+	if _, err := MatchPlayerByName(ctx, pool, "Lee Zzrsolo", "f"); !errors.Is(err, ErrNoConfidentMatch) {
+		t.Errorf("мужчина не может стать соперницей в женском матче: err = %v", err)
+	}
+	if g, err := PlayerGender(ctx, pool, idOf("zzr_twin_f")); err != nil || g != "f" {
+		t.Errorf("PlayerGender = %q, %v", g, err)
+	}
+}
+
+// Женский id источника (1218 — US Open wta singles) ложится на женский розыгрыш, мужской (1217)
+// — на мужской. Прогоняем встроенный файл как есть, тем же путём, что и сервис на старте.
+func TestEditionIdsMapWtaToWomensEdition(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `delete from tournament_editions where slug = 'us_open_wta_2026'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	if _, err := pool.Exec(ctx, `
+		insert into tournament_editions (tournament_id, year, slug, start_date, end_date, surface, gender)
+		select te.tournament_id, 2026, 'us_open_wta_2026', te.start_date, te.end_date, te.surface, 'f'
+		from tournament_editions te where te.slug = 'us_open_2026'`); err != nil {
+		t.Fatal(err)
+	}
+	files, err := livedb.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Name == "live_edition_ids.sql" {
+			if _, err := pool.Exec(ctx, f.SQL); err != nil {
+				t.Fatalf("live_edition_ids.sql: %v", err)
+			}
+		}
+	}
+	slugOf := func(key string) string {
+		var slug string
+		_ = pool.QueryRow(ctx, `
+			select te.slug from external_ids e join tournament_editions te on te.id = e.entity_id
+			where e.source = 'livetennisapi' and e.entity_type = 'edition' and e.external_key = $1`,
+			key).Scan(&slug)
+		return slug
+	}
+	if got := slugOf("1218"); got != "us_open_wta_2026" {
+		t.Errorf("1218 → %q, want us_open_wta_2026", got)
+	}
+	if got := slugOf("1217"); got != "us_open_2026" {
+		t.Skipf("в базе нет us_open_2026 (1217 → %q)", got)
 	}
 }

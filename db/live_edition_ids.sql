@@ -30,7 +30,7 @@
 -- has_more=false, один запрос).
 --
 -- Предыдущая версия этого файла держала 1209 (wta Cincinnati) и 1218 (wta
--- US Open) как ПОДТВЕРЖДЁННЫЕ — именно потому, что они встречались в ленте.
+-- US Open) как ПОДТВЕРЖДЁННЫЕ для МУЖСКИХ розыгрышей — потому что они встречались в ленте.
 -- Ущерба не было только потому, что писатель требует, чтобы разрешились ОБА
 -- игрока, а в players у нас лишь ATP; то есть спасала не проверка, а
 -- случайность. Такие id здесь больше не лежат.
@@ -53,7 +53,15 @@ from (values
   ('1210', 'cincinnati_2026'),    -- «Cincinnati», masters_1000
   ('1667', 'shanghai_2026'),      -- «Shanghai»; «Shanghai 2» (3700) — ДРУГОЙ турнир
   ('1725', 'paris_masters_2026'), -- «Paris», masters_1000
-  ('2794', 'atp_finals_2026')     -- «Finals - Turin», tour_finals
+  ('2794', 'atp_finals_2026'),    -- «Finals - Turin», tour_finals
+  -- WTA (2026-10-22): женские одиночные розыгрыши ложатся на ЖЕНСКИЕ розыгрыши
+  -- (<brand>_wta_<year>, tournament_editions.gender = 'f'). Подтверждение — данные
+  -- самого источника с tour = "wta" у обоих игроков: 1218 — testdata/us_open_tour_split.json
+  -- (15 строк wta singles), 1209 — testdata/live_board.json (Pegula — Swiatek, SF).
+  -- Пока женского розыгрыша в базе нет, join его пропускает: файл применяется на каждом
+  -- старте, и связь появится, как только розыгрыш зальёт контентный пайплайн.
+  ('1218', 'us_open_wta_2026'),   -- US Open, wta singles
+  ('1209', 'cincinnati_wta_2026') -- Cincinnati, wta singles
 ) as v(external_key, edition_slug)
 join tournament_editions te on te.slug = v.edition_slug
 -- do update, а не do nothing: этот файл и есть источник истины по маппингу,
@@ -65,13 +73,13 @@ on conflict (source, entity_type, external_key) do update
   set entity_id = excluded.entity_id,
       confirmed_at = coalesce(external_ids.confirmed_at, excluded.confirmed_at);
 
--- Снятые ранее строки. 1209 и 1218 — женские сетки, 1221 — парная; 1211, 8656,
+-- Снятые ранее строки. 1221 — парная; 1211, 8656,
 -- 1726 и 2795 в ATP-каталоге отсутствуют и, судя по разбивке выше, тоже
 -- принадлежат другому туру или разряду. Отсутствующий id безопаснее неверного:
 -- он приведёт фикстуру в live_unmatched, а неверный — в чужую сетку.
 delete from external_ids
 where source = 'livetennisapi' and entity_type = 'edition'
-  and external_key in ('1209', '1211', '1218', '1219', '1221', '1726', '2795', '8656');
+  and external_key in ('1211', '1219', '1221', '1726', '2795', '8656');
 
 -- Что получилось
 select e.external_key, te.slug, t.name, e.confirmed_at is not null as confirmed

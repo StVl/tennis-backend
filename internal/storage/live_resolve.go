@@ -88,11 +88,16 @@ var ErrNoConfidentMatch = errors.New("no confident player match")
 //     На всей базе однофамильцы есть (братья Cerundolo), и пусть лучше
 //     сомнительный случай упрётся в отказ.
 //
-//  2. Ветка «только фамилия» требует у источника минимум ДВА слова. Иначе
+//  2. Кандидаты — только игроки того же пола, что и известный соперник (gender — его
+//     players.gender): одиночный матч однополый. Однофамилец из другого тура не создаёт
+//     неоднозначности и, главное, не может быть привязан — мужчина-однофамилец не станет
+//     соперницей в женском матче (Zheng есть в обоих турах).
+//
+//  3. Ветка «только фамилия» требует у источника минимум ДВА слова. Иначе
 //     односложное имя вендора ("Zverev") сопоставляется по фамилии в одиночку —
 //     а именно так выглядят его же записи-заглушки, то есть самый бедный
 //     данными случай получал бы самое слабое доказательство.
-func MatchPlayerByName(ctx context.Context, pool *pgxpool.Pool, vendorName string) (int64, error) {
+func MatchPlayerByName(ctx context.Context, pool *pgxpool.Pool, vendorName, gender string) (int64, error) {
 	full := normalizeName(vendorName)
 	if full == "" {
 		return 0, ErrNoConfidentMatch
@@ -101,7 +106,8 @@ func MatchPlayerByName(ctx context.Context, pool *pgxpool.Pool, vendorName strin
 	surname := parts[len(parts)-1]
 
 	rows, err := pool.Query(ctx, `
-		select p.id, p.display_name, coalesce(p.last_name, '') from players p`)
+		select p.id, p.display_name, coalesce(p.last_name, '') from players p
+		where p.gender::text = $1`, gender)
 	if err != nil {
 		return 0, err
 	}
@@ -137,6 +143,13 @@ func MatchPlayerByName(ctx context.Context, pool *pgxpool.Pool, vendorName strin
 		return 0, ErrNoConfidentMatch
 	}
 	return found[0], nil
+}
+
+// PlayerGender — players.gender ('m' | 'f'): пол известной стороны матча для MatchPlayerByName.
+func PlayerGender(ctx context.Context, pool *pgxpool.Pool, playerID int64) (string, error) {
+	var g string
+	err := pool.QueryRow(ctx, `select gender::text from players where id = $1`, playerID).Scan(&g)
+	return g, err
 }
 
 func isSubsequenceOfWords(sub, full string) bool {

@@ -2,6 +2,7 @@ package live
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -377,5 +378,61 @@ func TestUnflaggedLiveMatchIsDetected(t *testing.T) {
 	}
 	if len(held) != 0 {
 		t.Fatalf("флагов %d, ожидалось 0", len(held))
+	}
+}
+
+// WTA end-to-end: настоящий борт источника (testdata/live_board.json, август 2026) несёт
+// живой полуфинал Pegula — Swiatek (id 177049, ключи игроков 50 и 889 из db/live_external_ids.sql).
+// Его женский матч у нас должен подняться в live тем же путём, что и мужской.
+func TestIngestFlipsWtaMatchFromRealBoard(t *testing.T) {
+	pool := testPool(t)
+	resetLiveState(t, pool)
+	ctx := context.Background()
+
+	var mapped int
+	if err := pool.QueryRow(ctx, `
+		select count(*) from external_ids e join players p on p.id = e.entity_id
+		where e.source = $1 and e.entity_type = 'player' and e.external_key in ('50', '889')
+		  and p.gender = 'f'`, livesource.SourceName).Scan(&mapped); err != nil || mapped != 2 {
+		t.Skipf("Pegula/Swiatek не отображены (%d, %v): нужен WTA-сид и db/live_external_ids.sql", mapped, err)
+	}
+
+	cleanup := func() { _, _ = pool.Exec(ctx, `delete from tournaments where slug = 'zzt_cin'`) }
+	cleanup()
+	t.Cleanup(cleanup)
+	for _, q := range []string{
+		`insert into tournaments (slug, name) values ('zzt_cin', 'Zzt Cincinnati')`,
+		`insert into tournament_editions (tournament_id, year, slug, start_date, end_date, surface, gender)
+		 select id, 2026, 'zzt_cin_wta_2026', '2026-08-16', '2026-08-24', 'hard', 'f'
+		 from tournaments where slug = 'zzt_cin'`,
+		`insert into matches (edition_id, round_code, scheduled_at, status, import_key)
+		 select id, 'SF', '2026-08-22T20:00:00Z', 'scheduled', 'zzt_wta_sf'
+		 from tournament_editions where slug = 'zzt_cin_wta_2026'`,
+		`insert into match_participants (match_id, side, slot, player_id)
+		 select m.id, v.side, 1, p.id
+		 from (values (1, 'pegula'), (2, 'swiatek')) v(side, slug)
+		 join players p on p.slug = v.slug, matches m where m.import_key = 'zzt_wta_sf'`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatalf("фикстура: %v", err)
+		}
+	}
+
+	raw, err := os.ReadFile("../../livesource/testdata/live_board.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	board, err := livesource.ParseBoard(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runIngest(t, pool, board)
+
+	var status string
+	if err := pool.QueryRow(ctx, `select status::text from matches where import_key = 'zzt_wta_sf'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "live" {
+		t.Errorf("женский полуфинал из борта: status = %s, want live", status)
 	}
 }

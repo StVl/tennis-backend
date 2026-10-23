@@ -399,11 +399,11 @@ func Ingest(ctx context.Context, pool *pgxpool.Pool, board livesource.Board,
 		if !ok1 || !ok2 {
 			// Один игрок известен, второй нет. Пробуем разрешить второго —
 			// один раз, под лимитом и с негативным кэшом.
-			missing := o.PlayerKeys[0]
+			missing, known := o.PlayerKeys[0], p2
 			if ok1 {
-				missing = o.PlayerKeys[1]
+				missing, known = o.PlayerKeys[1], p1
 			}
-			id, resolved := tryResolve(ctx, pool, p, missing, &res)
+			id, resolved := tryResolve(ctx, pool, p, missing, known, &res)
 			if !resolved {
 				_ = storage.RecordUnmatched(ctx, pool, livesource.SourceName,
 					unmatchedRow(o), "one_side_unresolved", p.Now)
@@ -521,8 +521,11 @@ func Ingest(ctx context.Context, pool *pgxpool.Pool, board livesource.Board,
 //     есть ответ всегда будет пустым;
 //   - строгий предикат в storage: сопоставлять можно только по именам, и
 //     неверная привязка тихо покажет карточку не того игрока.
+//
+// known — наш id известной стороны того же матча: неизвестный ищется только среди игроков её
+// пола (одиночный матч однополый; см. storage.MatchPlayerByName).
 func tryResolve(ctx context.Context, pool *pgxpool.Pool, p IngestParams,
-	key string, res *IngestResult) (int64, bool) {
+	key string, known int64, res *IngestResult) (int64, bool) {
 
 	if p.Resolver == nil || res.Resolved >= p.ResolveMax {
 		return 0, false
@@ -539,7 +542,12 @@ func tryResolve(ctx context.Context, pool *pgxpool.Pool, p IngestParams,
 		return 0, false
 	}
 
-	playerID, err := storage.MatchPlayerByName(ctx, pool, vendor.Name)
+	gender, err := storage.PlayerGender(ctx, pool, known)
+	if err != nil {
+		slog.Error("live: reading the known side's gender failed", "player_id", known, "error", err)
+		return 0, false
+	}
+	playerID, err := storage.MatchPlayerByName(ctx, pool, vendor.Name, gender)
 	if err != nil {
 		// Отказ — тоже результат, и он кэшируется: иначе тот же безнадёжный
 		// ключ будет стоить запрос каждый цикл.

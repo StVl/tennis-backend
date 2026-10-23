@@ -44,6 +44,7 @@ type GridPlayer struct {
 	FirstName *string `json:"first_name"`
 	LastName  *string `json:"last_name"`
 	PhotoURL  *string `json:"photo_url"`
+	Tour      Tour    `json:"tour"`
 	Rank      *int    `json:"rank"`       // null, если нет свежего снапшота в v_current_rankings
 	RankDelta *int    `json:"rank_delta"` // к предыдущему снапшоту
 	// С начала сезона: ранг в первом снапшоте года минус текущий (+2 — поднялся на два места).
@@ -369,11 +370,19 @@ func headerFactsFor(cards []SeasonCard, day homeDay, cityByEdition map[string]st
 // расширенные итоги недели; новые поля получают все, старые клиенты их игнорируют.
 // now — параметром ради тестов.
 //
+// tour — лига главной (?tour=, по умолчанию atp). Главные лиг не пересекаются: подписки,
+// ростер, турниры, итоги недели и заголовок — только этой лиги. Подписки общие на пользователя,
+// поэтому сюда приходят все, а отбираются здесь (followedInTour).
+//
 // Блоки новой главной не роняют ответ: их ошибка пишется в лог, а блок приходит пустым. Иначе
 // сбой нового запроса отнял бы главную и у старых клиентов, которым эти блоки не нужны.
 func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed []string,
-	highlightDays int, loc *time.Location, now time.Time, v2 bool) (*HomeFeed, error) {
-	roster, err := ListPlayers(ctx, pool, lang, true, "")
+	highlightDays int, loc *time.Location, now time.Time, v2 bool, tour Tour) (*HomeFeed, error) {
+	followed, err := followedInTour(ctx, pool, followed, tour)
+	if err != nil {
+		return nil, err
+	}
+	roster, err := ListPlayers(ctx, pool, lang, true, "", &tour)
 	if err != nil {
 		return nil, err
 	}
@@ -397,18 +406,18 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		rosterBySlug[p.Slug] = p
 		feed.AllPlayers = append(feed.AllPlayers, GridPlayer{
 			Slug: p.Slug, Name: p.Name, FirstName: p.FirstName, LastName: p.LastName, PhotoURL: p.PhotoURL,
-			Rank: p.Rank, RankDelta: p.RankDelta, SeasonRankDelta: p.SeasonRankDelta,
+			Tour: p.Tour, Rank: p.Rank, RankDelta: p.RankDelta, SeasonRankDelta: p.SeasonRankDelta,
 			Followed: followedSet[p.Slug],
 		})
 	}
 
-	featured, err := loadFeaturedTournament(ctx, pool, lang, now)
+	featured, err := loadFeaturedTournament(ctx, pool, lang, now, tour)
 	if err != nil {
 		return nil, err
 	}
 	feed.FeaturedTournament = featured
 
-	tournaments, tournamentFacts, err := loadHomeTournaments(ctx, pool, followed, day)
+	tournaments, tournamentFacts, err := loadHomeTournaments(ctx, pool, followed, day, tour)
 	if err != nil {
 		slog.Error("home v2: tournaments block failed, sending it empty", "error", err)
 		tournaments, tournamentFacts = []HomeTournament{}, nil
@@ -519,7 +528,7 @@ func GetWidgetFeed(ctx context.Context, pool *pgxpool.Pool, followed []string, l
 	if len(followed) == 0 {
 		return feed, nil
 	}
-	roster, err := ListPlayers(ctx, pool, "en", false, "")
+	roster, err := ListPlayers(ctx, pool, "en", false, "", nil)
 	if err != nil {
 		slog.Error("widget: season cards failed, sending none", "error", err)
 		return feed, nil
@@ -692,7 +701,7 @@ func widgetRows(ctx context.Context, pool *pgxpool.Pool, followed []string, loc 
 // playerHeadersBySlug — slug/имя/фото для строк виджета.
 func playerHeadersBySlug(ctx context.Context, pool *pgxpool.Pool, slugs []string) (map[string]Opponent, error) {
 	rows, err := pool.Query(ctx,
-		`select slug, display_name, photo_url from players where slug = any($1)`, slugs)
+		`select slug, display_name, photo_url, tour_code_for(gender) from players where slug = any($1)`, slugs)
 	if err != nil {
 		return nil, err
 	}
@@ -700,7 +709,7 @@ func playerHeadersBySlug(ctx context.Context, pool *pgxpool.Pool, slugs []string
 	type row struct{ o Opponent }
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var x row
-		err := r.Scan(&x.o.Slug, &x.o.Name, &x.o.PhotoURL)
+		err := r.Scan(&x.o.Slug, &x.o.Name, &x.o.PhotoURL, &x.o.Tour)
 		return x, err
 	})
 	if err != nil {

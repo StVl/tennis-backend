@@ -30,6 +30,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 | `UPDATE_TIMEOUT` | `5m` | таймаут одного прогона апдейтера |
 | `DEV_ENDPOINTS_ENABLED` | `false` | включает раздел `/v1/dev` — ручные триггеры live-статуса |
 | `PAID_SUBSCRIPTIONS_ENABLED` | `false` | включает платные подписки; флаг отдаётся клиенту в `GET /v1/config` |
+| `FEATURE_WTA` | `false` | показывает в приложении лигу WTA (переключатель лиг, табы онбординга); флаг `wta` в `GET /v1/config`. Данные WTA API отдаёт всегда |
 | `LIVE_MATCHES_LIMIT` | `50` | предохранитель на размер `/v1/users/me/live-matches` (не продуктовый потолок) |
 | `RUN_ONCE` | — | прогнать один джоб и выйти (`live-schedule`, `players`, `tournaments`); боевой рычаг «обновить сейчас» |
 
@@ -137,6 +138,7 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - Время — ISO 8601 с таймзоной. Параметр `?tz=Area/City` задаёт, в какой таймзоне считать «сегодня».
 - Пагинация: `?limit=` (default 50) и `?offset=`.
 - Ошибки: HTTP-статус + `{"error": {"code": "not_found", "message": "..."}}`.
+- **Лиги ATP и WTA.** Тур игрока выводится из его пола (`m` → `atp`, `f` → `wta`). Рейтинг игрока — всегда рейтинг его тура. Каждый тип с рангом (`/v1/players`, `/v1/players/{slug}`, `all_players[]`, `your_season[].player`, `/v1/users/me/follows`) отдаёт поле `tour: "atp" | "wta"`. Экраны лиги принимают `?tour=atp|wta` (по умолчанию `atp` — клиенты до WTA видят ровно то же, что раньше). Неизвестное значение → `400 bad_tour`. Женский розыгрыш совмещённого турнира имеет свой слаг: `wimbledon_wta_2026`. Категории турниров у WTA свои (`WTA 250/500/1000`, `WTA Finals`; шлем — `Grand Slam` у обоих). Виджет (`/v1/widget`, `/v1/users/me/widget`) — общий: строки и `season` из подписок обеих лиг одной лентой, у `rows[].player` есть `tour`.
 
 ## Сервисные
 
@@ -152,15 +154,15 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 {"features": {"paid_subscriptions": false}}
 ```
 
-`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные.
+`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные. `wta` — показывать ли лигу WTA (`FEATURE_WTA`, по умолчанию выключена).
 
 ## Композитные (один запрос = один экран)
 
 Замена config.json: приложение и виджет получают готовую выдачу одним запросом. До появления серверных подписок клиент передаёт их сам через `?player_ids=` (из App Group); авторизованные варианты с подписками из БД — в разделе «Пользователи».
 
-### `GET /v1/home?player_ids=sinner,alcaraz&lang=en&highlights_days=7&tz=Europe/Madrid`
+### `GET /v1/home?player_ids=sinner,alcaraz&lang=en&highlights_days=7&tz=Europe/Madrid&tour=atp`
 
-Главный экран целиком:
+Главный экран **одной лиги** (`?tour=`, по умолчанию `atp`). Лиги не пересекаются: из подписок берутся только игроки этой лиги (в их порядке), `all_players` — ростер лиги, турнирный блок, `featured_tournament`, итоги недели и заголовок — только розыгрыши этой лиги. Главный экран целиком:
 
 ```json
 {
@@ -257,8 +259,8 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 
 ## Игроки
 
-### `GET /v1/players?tracked=true&search=&lang=`
-Список ростера, отсортирован по рейтингу. `?tracked=false` — все игроки, включая соперников вне ростера. `?search=` — подстрока имени (регистронезависимо). Поля: slug, имя, фото, `rank`, `rank_delta`, стиль.
+### `GET /v1/players?tracked=true&search=&lang=&tour=`
+Список ростера **одной лиги** (`?tour=`, по умолчанию `atp`), отсортирован по рейтингу. С `?tracked=false` или `?search=` без явного `?tour=` — оба тура. `?tracked=false` — все игроки, включая соперников вне ростера. `?search=` — подстрока имени (регистронезависимо). Поля: slug, имя, фото, `rank`, `rank_delta`, стиль.
 
 ### `GET /v1/players/{slug}?include=last_matches,next_match,next_tournament`
 Полный профиль: имя/фамилия, фото, дата рождения, рука, рост, страна, traits, pro_tip, links, стиль с описанием, текущий рейтинг/очки. `include` доклеивает блоки детального экрана — карточка игрока собирается одним запросом:
@@ -397,7 +399,7 @@ curl -X POST localhost:8080/v1/dev/live/ingest --data-binary @board_without.json
 
 | Метод | Путь | Описание |
 |---|---|---|
-| `GET` | `/v1/users/me/follows` | список подписок в порядке добавления (slug, имя, фото, дата) |
+| `GET` | `/v1/users/me/follows` | список подписок в порядке добавления (slug, имя, фото, `tour`, дата); подписки общие для обеих лиг, бесплатный лимит клиент считает по `tour` |
 | `PUT` | `/v1/users/me/follows/{slug}` | подписаться; идемпотентно (204); 404 если игрока нет |
 | `DELETE` | `/v1/users/me/follows/{slug}` | отписаться; идемпотентно (204) |
 | `PUT` | `/v1/users/me/follows` | заменить весь список: `{"player_slugs": ["sinner", ...]}` (онбординг). Ответ: итоговый список + `unknown_slugs` |
@@ -430,7 +432,7 @@ curl -X POST localhost:8080/v1/dev/live/ingest --data-binary @board_without.json
 - пока ни один матч не помечен живым, ответ — `{"items": [], "total": 0, "truncated": false}`. Это норма, а не ошибка: поднять матч руками можно через `/v1/dev`.
 
 ### `GET /v1/users/me/home` и `GET /v1/users/me/widget?tz=`
-Те же `home`/`widget`, но подписки берутся из БД (порядок = порядок добавления). Формат ответов идентичен публичным вариантам, включая `weekly_highlights` и `?highlights_days=`.
+Те же `home`/`widget`, но подписки берутся из БД (порядок = порядок добавления). Формат ответов идентичен публичным вариантам, включая `weekly_highlights` и `?highlights_days=`. `home` принимает `?tour=` так же, как публичный; `widget` — общий для обеих лиг (лента из всех подписок).
 
 Пример полного флоу:
 

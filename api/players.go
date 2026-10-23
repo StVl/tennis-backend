@@ -13,7 +13,17 @@ import (
 // По умолчанию только ростер; ?tracked=false — все, включая соперников извне.
 func (h *Handler) ListPlayers(w http.ResponseWriter, r *http.Request) {
 	trackedOnly := r.URL.Query().Get("tracked") != "false"
-	items, err := storage.ListPlayers(r.Context(), h.pool, langParam(r), trackedOnly, r.URL.Query().Get("search"))
+	// Ростер (онбординг) — один тур (?tour=, по умолчанию atp: клиенты до WTA параметр не шлют).
+	// Поиск и ?tracked=false — по обоим турам, если тур не задан явно.
+	tour, ok := tourParam(w, r)
+	if !ok {
+		return
+	}
+	var only *storage.Tour
+	if trackedOnly || r.URL.Query().Has("tour") {
+		only = &tour
+	}
+	items, err := storage.ListPlayers(r.Context(), h.pool, langParam(r), trackedOnly, r.URL.Query().Get("search"), only)
 	if err != nil {
 		respondQueryError(w, err)
 		return
