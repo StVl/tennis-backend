@@ -83,8 +83,8 @@ That warning (`internal/updater/live/schedule.go:76`) is the intended detector f
 |---|---|---|
 | `live_ingest.sql` | yes | The seven ingest tables: runs, observations, flags, schedule, unmatched, events, resolve attempts |
 | `live_push.sql` | yes | `live_activity_sessions` (+ `device_push_tokens`, see below) |
-| `live_external_ids.sql` | yes | `external_ids` DDL + 134 player mappings |
-| `live_edition_ids.sql` | yes | 5 tournament mappings, ATP singles only |
+| `live_external_ids.sql` | yes | `external_ids` DDL + 184 player mappings (all tracked ATP but Rune, all 50 tracked WTA) |
+| `live_edition_ids.sql` | yes | 7 tournament mappings: 5 ATP singles, 2 WTA singles |
 | `dev_fixtures.sql` | **never** | Two synthetic `scheduled` matches for local testing. Marked "не переносить" |
 
 None of it goes to tennis-data-storage. That repo owns the content schema and should not know who

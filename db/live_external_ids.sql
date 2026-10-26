@@ -165,9 +165,7 @@ from (values
     ('446', 'wu_yibing', true),                  --         Yibing Wu  [token_set]
     -- WTA (2026-10-22): игроки женского топ-50 (scripts/seed_wta_roster.py в tennis-data-storage),
     -- найденные в бортах самого источника (internal/livesource/testdata, август 2026) с
-    -- tour = "wta" и полным совпадением имени. Остальные 34 сюда не вписаны: без собственного
-    -- ответа источника их id — догадка. Их доберёт ленивый резолвер (матч против известной
-    -- соперницы) или поиск по API источника, который стоит квоты.
+    -- tour = "wta" и полным совпадением имени. Остальные 34 — ниже, из /players.
     ('679', 'bartunkova', true),              -- tracked WTA Nikola Bartunkova  [full_name, board 2026-08]
     ('454', 'bouzkova', true),                -- tracked WTA Marie Bouzkova  [full_name, board 2026-08]
     ('894', 'chwalinska', true),              -- tracked WTA Maja Chwalinska  [full_name, board 2026-08]
@@ -183,7 +181,48 @@ from (values
     ('304', 'starodubtseva', true),           -- tracked WTA Yuliia Starodubtseva  [full_name, board 2026-08]
     ('889', 'swiatek', true),                 -- tracked WTA Iga Swiatek  [full_name, board 2026-08]
     ('488', 'tjen', true),                    -- tracked WTA Janice Tjen  [full_name, board 2026-08]
-    ('249', 'vekic', true)                    -- tracked WTA Donna Vekic  [full_name, board 2026-08]
+    ('249', 'vekic', true),                   -- tracked WTA Donna Vekic  [full_name, board 2026-08]
+    -- WTA (2026-10-26): остальные 34 из топ-50 — из ранжированного списка источника
+    -- (GET /players?limit=200, первая страница: топ-100 обоих туров по рейтингу). Взяты только
+    -- строки с tour = "wta", полным совпадением имени И рейтингом источника, равным нашему, —
+    -- имя здесь не единственное доказательство. Поиск по фамилии каждой (/players?search=)
+    -- второго id ни у кого не нашёл. Plíšková: поиск источника не сворачивает диакритику и по
+    -- "Pliskova" её не находит; заглушка 'Pliskova' (17137, без рейтинга) НЕ привязана — у неё
+    -- есть сестра-близнец Kristyna, и чья это строка, неизвестно.
+    ('45', 'alexandrova', true),              -- tracked WTA Ekaterina Alexandrova  [full_name + rank 33, /players 2026-10-26]
+    ('57', 'andreeva', true),                 -- tracked WTA Mirra Andreeva  [full_name + rank 3, /players 2026-10-26]
+    ('59', 'anisimova', true),                -- tracked WTA Amanda Anisimova  [full_name + rank 18, /players 2026-10-26]
+    ('44', 'baptiste', true),                 -- tracked WTA Hailey Baptiste  [full_name + rank 44, /players 2026-10-26]
+    ('487', 'bejlek', true),                  -- tracked WTA Sara Bejlek  [full_name + rank 32, /players 2026-10-26]
+    ('60', 'bencic', true),                   -- tracked WTA Belinda Bencic  [full_name + rank 14, /players 2026-10-26]
+    ('759', 'birrell', true),                 -- tracked WTA Kimberly Birrell  [full_name + rank 41, /players 2026-10-26]
+    ('998', 'bucsa', true),                   -- tracked WTA Cristina Bucsa  [full_name + rank 38, /players 2026-10-26]
+    ('63', 'cirstea', true),                  -- tracked WTA Sorana Cirstea  [full_name + rank 17, /players 2026-10-26]
+    ('62', 'eala', true),                     -- tracked WTA Alexandra Eala  [full_name + rank 20, /players 2026-10-26]
+    ('49', 'fernandez', true),                -- tracked WTA Leylah Fernandez  [full_name + rank 30, /players 2026-10-26]
+    ('490', 'frech', true),                   -- tracked WTA Magdalena Frech  [full_name + rank 47, /players 2026-10-26]
+    ('51', 'jovic', true),                    -- tracked WTA Iva Jovic  [full_name + rank 12, /players 2026-10-26]
+    ('489', 'kalinskaya', true),              -- tracked WTA Anna Kalinskaya  [full_name + rank 23, /players 2026-10-26]
+    ('14475', 'kartal', true),                -- tracked WTA Sonay Kartal  [full_name + rank 49, /players 2026-10-26]
+    ('54', 'keys', true),                     -- tracked WTA Madison Keys  [full_name + rank 21, /players 2026-10-26]
+    ('48', 'kostyuk', true),                  -- tracked WTA Marta Kostyuk  [full_name + rank 10, /players 2026-10-26]
+    ('1194', 'krejcikova', true),             -- tracked WTA Barbora Krejcikova  [full_name + rank 45, /players 2026-10-26]
+    ('58', 'mboko', true),                    -- tracked WTA Victoria Mboko  [full_name + rank 16, /players 2026-10-26]
+    ('769', 'mertens', true),                 -- tracked WTA Elise Mertens  [full_name + rank 15, /players 2026-10-26]
+    ('1217', 'navarro', true),                -- tracked WTA Emma Navarro  [full_name + rank 28, /players 2026-10-26]
+    ('768', 'noskova', true),                 -- tracked WTA Linda Noskova  [full_name + rank 8, /players 2026-10-26]
+    ('997', 'osaka', true),                   -- tracked WTA Naomi Osaka  [full_name + rank 19, /players 2026-10-26]
+    ('40', 'paolini', true),                  -- tracked WTA Jasmine Paolini  [full_name + rank 35, /players 2026-10-26]
+    ('1627', 'pliskova', true),               -- tracked WTA Karolina Pliskova  [full_name + rank 48, /players 2026-10-26]
+    ('648', 'potapova', true),                -- tracked WTA Anastasia Potapova  [full_name + rank 27, /players 2026-10-26]
+    ('47', 'rybakina', true),                 -- tracked WTA Elena Rybakina  [full_name + rank 1, /players 2026-10-26]
+    ('55', 'sabalenka', true),                -- tracked WTA Aryna Sabalenka  [full_name + rank 2, /players 2026-10-26]
+    ('509', 'sakkari', true),                 -- tracked WTA Maria Sakkari  [full_name + rank 31, /players 2026-10-26]
+    ('486', 'shnaider', true),                -- tracked WTA Diana Shnaider  [full_name + rank 13, /players 2026-10-26]
+    ('981', 'snigur', true),                  -- tracked WTA Daria Snigur  [full_name + rank 40, /players 2026-10-26]
+    ('298', 'stearns', true),                 -- tracked WTA Peyton Stearns  [full_name + rank 37, /players 2026-10-26]
+    ('43', 'svitolina', true),                -- tracked WTA Elina Svitolina  [full_name + rank 6, /players 2026-10-26]
+    ('791', 'wang', true)                     -- tracked WTA Xinyu Wang  [full_name + rank 39, /players 2026-10-26]
 ) as v(external_key, slug, confirmed)
 join players p on p.slug = v.slug
 on conflict (source, entity_type, external_key) do nothing;

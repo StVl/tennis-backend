@@ -201,8 +201,9 @@ a card did or did not appear.
 
 WTA rides the same path with no special case: the board already carries women's rows, and a women's
 match flips as soon as both players resolve. What WTA needs is mapping, not code —
-`db/live_external_ids.sql` holds the women's ids that the vendor's own data confirms (16 of the top
-50 as of 2026-10-22), the lazy resolver adds opponents of those, and `db/live_edition_ids.sql` maps
+`db/live_external_ids.sql` holds the vendor ids of all 50 tracked women (16 from captured boards on
+2026-10-22, the other 34 from the vendor's ranked `/players` list on 2026-10-26, each matched on full
+name *and* an identical rank), the lazy resolver adds their opponents, and `db/live_edition_ids.sql` maps
 the vendor's women's singles ids (1218, 1209) to `<brand>_wta_<year>` editions.
 `TestIngestFlipsWtaMatchFromRealBoard` replays a captured board and proves the flip end to end.
 6. `AppendObservation` with `run_id`, then `Derive`, then `applyAction`.
