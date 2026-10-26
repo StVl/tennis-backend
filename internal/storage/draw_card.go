@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -63,8 +64,9 @@ func loadDrawCard(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug str
 	rows, err := pool.Query(ctx, `
 		select m.id, m.round_code, m.bracket_pos, m.winner_side,
 		       coalesce(ro.label->>$2, ro.label->>'en', m.round_code),
-		       p1.slug, p1.display_name, p1.first_name, p1.last_name, c1.flag_emoji, e1.seed,
-		       p2.slug, p2.display_name, p2.first_name, p2.last_name, c2.flag_emoji, e2.seed
+		       m.status::text, m.outcome::text, m.scheduled_at, coalesce(sets.j::text, '[]'),
+		       p1.slug, p1.display_name, p1.first_name, p1.last_name, c1.flag_emoji, e1.seed, p1.photo_url,
+		       p2.slug, p2.display_name, p2.first_name, p2.last_name, c2.flag_emoji, e2.seed, p2.photo_url
 		from matches m
 		join tournament_editions te on te.id = m.edition_id
 		join rounds ro on ro.code = m.round_code
@@ -76,6 +78,11 @@ func loadDrawCard(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug str
 		left join players p2 on p2.id = mp2.player_id
 		left join countries c2 on c2.code = p2.country_code
 		left join tournament_entries e2 on e2.edition_id = te.id and e2.player_id = p2.id
+		left join lateral (
+			select json_agg(json_build_array(s.side1_games, s.side2_games, s.tiebreak_loser_points)
+			       order by s.set_no) as j
+			from match_sets s where s.match_id = m.id
+		) sets on true
 		where te.slug = $1
 		  and m.round_code !~* '^q[0-9]'
 		  and m.status <> 'cancelled'
@@ -89,18 +96,23 @@ func loadDrawCard(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug str
 		round, title             string
 		pos                      *int
 		winner                   *int
+		status                   string
+		outcome                  *string
+		scheduledAt              *time.Time
+		setsJSON                 string
 		s1slug, s1disp, s1f, s1l *string
-		s1flag                   *string
+		s1flag, s1photo          *string
 		s1seed                   *int
 		s2slug, s2disp, s2f, s2l *string
-		s2flag                   *string
+		s2flag, s2photo          *string
 		s2seed                   *int
 	}
 	raw, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var x row
 		err := r.Scan(&x.matchID, &x.round, &x.pos, &x.winner, &x.title,
-			&x.s1slug, &x.s1disp, &x.s1f, &x.s1l, &x.s1flag, &x.s1seed,
-			&x.s2slug, &x.s2disp, &x.s2f, &x.s2l, &x.s2flag, &x.s2seed)
+			&x.status, &x.outcome, &x.scheduledAt, &x.setsJSON,
+			&x.s1slug, &x.s1disp, &x.s1f, &x.s1l, &x.s1flag, &x.s1seed, &x.s1photo,
+			&x.s2slug, &x.s2disp, &x.s2f, &x.s2l, &x.s2flag, &x.s2seed, &x.s2photo)
 		return x, err
 	})
 	if err != nil {
@@ -110,10 +122,18 @@ func loadDrawCard(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug str
 	out := []DrawCardRound{}
 	for _, x := range raw {
 		m := DrawCardMatch{
-			ID:         x.matchID,
-			BracketPos: x.pos,
-			Top:        makeSlot(x.s1slug, x.s1disp, x.s1f, x.s1l, x.s1flag, x.s1seed, x.winner, 1),
-			Bottom:     makeSlot(x.s2slug, x.s2disp, x.s2f, x.s2l, x.s2flag, x.s2seed, x.winner, 2),
+			ID:          x.matchID,
+			BracketPos:  x.pos,
+			Top:         makeSlot(x.s1slug, x.s1disp, x.s1f, x.s1l, x.s1flag, x.s1seed, x.winner, 1),
+			Bottom:      makeSlot(x.s2slug, x.s2disp, x.s2f, x.s2l, x.s2flag, x.s2seed, x.winner, 2),
+			Status:      drawMatchStatus(x.status, x.outcome),
+			Sets:        [][]*int{},
+			ScheduledAt: x.scheduledAt,
+		}
+		m.Top.PhotoURL = emptyToNil(x.s1photo)
+		m.Bottom.PhotoURL = emptyToNil(x.s2photo)
+		if err := json.Unmarshal([]byte(x.setsJSON), &m.Sets); err != nil {
+			return nil, fmt.Errorf("unmarshal sets: %w", err)
 		}
 		if len(out) == 0 || out[len(out)-1].Code != x.round {
 			out = append(out, DrawCardRound{Code: x.round, Title: x.title, Matches: []DrawCardMatch{}})
@@ -191,6 +211,8 @@ func fillDrawRound(matches []DrawCardMatch, depth int) []DrawCardMatch {
 			BracketPos: &p,
 			Top:        DrawSlot{Name: tbdSlotName, TBD: true},
 			Bottom:     DrawSlot{Name: tbdSlotName, TBD: true},
+			Status:     "scheduled",
+			Sets:       [][]*int{},
 		})
 	}
 	return out
@@ -218,12 +240,32 @@ func makeSlot(slug, display, first, last, flag *string, seed *int, winnerSide *i
 		return DrawSlot{Name: tbdSlotName, TBD: true}
 	}
 	return DrawSlot{
-		Name:   slotName(deref(first), deref(last), deref(display)),
-		Slug:   slug,
-		Flag:   emptyToNil(flag),
-		Seed:   seed,
-		Winner: winnerSide != nil && *winnerSide == side,
+		Name:      slotName(deref(first), deref(last), deref(display)),
+		Slug:      slug,
+		Flag:      emptyToNil(flag),
+		Seed:      seed,
+		Winner:    winnerSide != nil && *winnerSide == side,
+		FirstName: emptyToNil(first),
+		LastName:  emptyToNil(last),
 	}
+}
+
+// drawMatchStatus — статус матча для страницы турнира: исход завершённого матча различает
+// отказ (walkover) и снятие по ходу (retired; дисквалификацию клиент рисует так же).
+func drawMatchStatus(status string, outcome *string) string {
+	switch status {
+	case "live":
+		return "live"
+	case "completed":
+		switch deref(outcome) {
+		case "walkover":
+			return "walkover"
+		case "retirement", "default":
+			return "retired"
+		}
+		return "finished"
+	}
+	return "scheduled"
 }
 
 func emptyToNil(s *string) *string {

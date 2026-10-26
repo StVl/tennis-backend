@@ -38,6 +38,10 @@ type EditionDetail struct {
 	CountryCode   *string         `json:"country_code"`
 	DateRange     string          `json:"date_range"`
 	CourtImageURL *string         `json:"court_image_url"`
+	// Страница турнира: уровень (как на главной, null — неизвестен), буква плитки и город без страны.
+	Category *string `json:"category"`
+	Monogram string  `json:"monogram"`
+	City     *string `json:"city"`
 	Rounds        []DrawCardRound `json:"rounds"`
 	Entries       []EditionEntry  `json:"entries"`
 }
@@ -54,6 +58,10 @@ type DrawCardMatch struct {
 	BracketPos *int     `json:"bracket_pos"`
 	Top        DrawSlot `json:"top"`
 	Bottom     DrawSlot `json:"bottom"`
+	// scheduled | live | finished | walkover | retired (retired — и снятие по дисквалификации).
+	Status      string     `json:"status"`
+	Sets        [][]*int   `json:"sets"` // [top_games, bottom_games, tiebreak_loser_points|null]
+	ScheduledAt *time.Time `json:"scheduled_at"`
 }
 
 // DrawSlot — одна сторона вилки. tbd=true, если игрока ещё нет.
@@ -64,6 +72,10 @@ type DrawSlot struct {
 	Seed   *int    `json:"seed"`
 	Winner bool    `json:"winner"`
 	TBD    bool    `json:"tbd"`
+	// Части имени и фото — для страницы турнира (фамилия в карточке матча, инициалы, аватар).
+	FirstName *string `json:"first_name"`
+	LastName  *string `json:"last_name"`
+	PhotoURL  *string `json:"photo_url"`
 }
 
 type EditionEntry struct {
@@ -141,9 +153,11 @@ func GetEdition(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug strin
 		       ru.slug, ru.display_name, ru.photo_url,
 		       coalesce(t.description->>$2, t.description->>'en', t.description->>'ru'),
 		       t.conditions::text, v.draw_size, v.prize_money::bigint, v.prize_currency,
-		       v.draw_date, v.draw_status::text, t.country_code
+		       v.draw_date, v.draw_status::text, t.country_code,
+		       te.metadata->>'category', te.gender::text, te.metadata->>'location'
 		from v_tournament_editions v
 		join tournaments t on t.id = v.tournament_id
+		join tournament_editions te on te.slug = v.slug
 		left join players ch on ch.id = v.champion_id
 		left join players ru on ru.id = v.runner_up_id
 		where v.slug = $1`,
@@ -157,14 +171,28 @@ func GetEdition(ctx context.Context, pool *pgxpool.Pool, lang, editionSlug strin
 			chSlug, chName, chPhoto *string
 			ruSlug, ruName, ruPhoto *string
 			desc, conds             *string
+			category, metaLocation  *string
+			gender                  string
 		)
 		err := row.Scan(&d.Edition, &d.Tournament, &d.Name, &d.Year, &d.StartDate, &d.EndDate,
 			&d.Surface, &d.Status, &d.Location, &d.LogoURL,
 			&chSlug, &chName, &chPhoto, &ruSlug, &ruName, &ruPhoto,
 			&desc, &conds, &d.DrawSize, &d.PrizeMoney, &d.PrizeCurrency,
-			&d.DrawDate, &d.DrawStatus, &d.CountryCode)
+			&d.DrawDate, &d.DrawStatus, &d.CountryCode,
+			&category, &gender, &metaLocation)
 		if err != nil {
 			return d, err
+		}
+		tour := TourATP
+		if gender == TourWTA.Gender() {
+			tour = TourWTA
+		}
+		d.Category = homeCategory(d.Tournament, tour, category)
+		d.Monogram = tournamentMonogram(d.Tournament, d.Name)
+		if d.Location != nil && *d.Location != "" {
+			d.City = cityFromLocation(d.Location)
+		} else {
+			d.City = cityFromLocation(metaLocation)
 		}
 		if chSlug != nil {
 			d.Champion = &Opponent{Slug: *chSlug, Name: deref(chName), PhotoURL: chPhoto}

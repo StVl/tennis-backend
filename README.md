@@ -292,7 +292,9 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 - `draw_status`: `awaiting_draw` | `drawn`; `draw_date` — дата жеребьёвки;
 - `court_image_url` — фото корта по покрытию (`hard` / `clay` / `grass`);
 - `rounds` — сетка слотами `top` / `bottom`: имя «C. Alcaraz», `flag`, `seed`, `winner`, `tbd`, `bracket_pos`. У розыгрыша с импортированной сеткой (`bracket_pos` у всех матчей, коды `R128`…`F`) — все раунды до финала: узлы без строки в БД приходят как TBD/TBD с отрицательным `id`. Отменённые строки (`cancelled`) не показываются;
-- `entries` — заявочный лист (как раньше).
+- `entries` — заявочный лист (как раньше);
+- страница турнира: `category` («ATP 250», «WTA 1000», «Grand Slam»; null — неизвестна, источник тот же, что у карточки главной), `monogram` (буква плитки), `city` (город без страны);
+- у каждого матча сетки: `status` — `scheduled` | `live` | `finished` | `walkover` | `retired`, `sets` — `[[top, bottom, tiebreak_loser_points|null], …]` (пустой массив, если счёта нет; у live-матча счёта нет — лента его не несёт), `scheduled_at`; у слота — `first_name`, `last_name`, `photo_url`.
 
 При `awaiting_draw` `rounds` — пустой массив. `/draw` остаётся нейтральной формой матча для других клиентов.
 

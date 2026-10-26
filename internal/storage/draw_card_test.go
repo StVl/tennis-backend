@@ -72,3 +72,25 @@ func TestFillDrawRoundAddsTBDNodes(t *testing.T) {
 		t.Fatalf("TBD-узел: %+v", got[0])
 	}
 }
+
+func TestDrawMatchStatus(t *testing.T) {
+	str := func(s string) *string { return &s }
+	tests := []struct {
+		status  string
+		outcome *string
+		want    string
+	}{
+		{"scheduled", nil, "scheduled"},
+		{"live", nil, "live"},
+		{"completed", str("normal"), "finished"},
+		{"completed", nil, "finished"},
+		{"completed", str("walkover"), "walkover"},
+		{"completed", str("retirement"), "retired"},
+		{"completed", str("default"), "retired"},
+	}
+	for _, tc := range tests {
+		if got := drawMatchStatus(tc.status, tc.outcome); got != tc.want {
+			t.Errorf("drawMatchStatus(%q,%v)=%q want %q", tc.status, tc.outcome, got, tc.want)
+		}
+	}
+}
