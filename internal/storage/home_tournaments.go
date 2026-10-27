@@ -99,8 +99,11 @@ func homeCategory(brand string, tour Tour, meta *string) *string {
 
 // localDay — номер дня турнира по местной дате пользователя.
 func localDay(today, start, end time.Time) (n, total int) {
-	d := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC) }
+	d := calendarDate
 	total = int(d(end).Sub(d(start)).Hours()/24) + 1
+	if total < 1 {
+		total = 1
+	}
 	n = int(d(today).Sub(d(start)).Hours()/24) + 1
 	if n < 1 {
 		n = 1
@@ -109,6 +112,12 @@ func localDay(today, start, end time.Time) (n, total int) {
 		n = total
 	}
 	return n, total
+}
+
+// calendarDate — дата t в её собственной зоне, полночью UTC. Так местное «сегодня»
+// пользователя сравнимо с датами розыгрыша, которые из БД приходят полночью UTC.
+func calendarDate(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // sortHomeTournaments — §5: сначала турниры с подписками (больше подписок — раньше),
@@ -271,6 +280,7 @@ func nextMatchPerEdition(ctx context.Context, pool *pgxpool.Pool, editions []str
 		where te.slug = any($1) and m.status in ('scheduled', 'live')
 		  and m.round_code !~* '^q'
 		  and (m.status = 'live' or m.scheduled_at >= $2)
+		  and (m.status = 'live' or `+notFinishedByIngest("m.id")+`)
 		order by te.slug, case when m.status = 'live' then 0 else 1 end, m.scheduled_at nulls last`,
 		editions, notBefore)
 	if err != nil {

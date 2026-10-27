@@ -348,6 +348,11 @@ func HeadToHead(ctx context.Context, pool *pgxpool.Pool, a, b string) (*H2H, err
 	}
 	h := &H2H{Matches: matches}
 	for _, m := range matches {
+		// Неявка в списке остаётся, но в счёт не идёт — так считают ATP и WTA, и иначе наш
+		// счёт расходится с официальным. Снятие по ходу матча (retirement) идёт.
+		if deref(m.Outcome) == "walkover" {
+			continue
+		}
 		switch deref(m.Result) {
 		case "won":
 			h.Wins++

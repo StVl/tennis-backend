@@ -211,6 +211,10 @@ create table if not exists live_events (
 create index if not exists live_events_pending_idx
   on live_events (created_at) where consumed_at is null;
 
+-- главная и виджет на каждый запрос проверяют «ingest видел конец матча»
+-- (storage.notFinishedByIngest)
+create index if not exists live_events_match_idx on live_events (match_id);
+
 -- ---------------------------------------------------------------------------
 -- Негативный кэш ленивого резолвера.
 -- ---------------------------------------------------------------------------

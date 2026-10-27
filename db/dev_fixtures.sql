@@ -51,6 +51,15 @@ cross join lateral (values (1, f.slug_a), (2, f.slug_b)) as s(side, slug)
 join players p on p.slug = s.slug
 on conflict do nothing;
 
+-- Прошлый /finish оставил событие 'finished', а по нему главная и виджет прячут матч из
+-- «ближайших» (storage.notFinishedByIngest) — до ретеншна через 7 дней. Без этой строки
+-- сброшенная фикстура на главную не возвращается. Только у не-live фикстур: у поднятой
+-- событие ещё нужно пушеру. Неотправленный end-пуш тут тоже теряется — для dev приемлемо.
+delete from live_events le
+using matches m
+where m.id = le.match_id and m.import_key like 'devfix\_%'
+  and m.status <> 'live' and le.event = 'finished';
+
 commit;
 
 -- Что получилось
