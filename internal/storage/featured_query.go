@@ -127,20 +127,14 @@ func loadFeaturedTournament(ctx context.Context, pool *pgxpool.Pool, lang string
 	}, nil
 }
 
-// chooseFeatured — среди равных по статусу и дате: старший уровень, затем имя — тот же порядок,
-// что у карусели турниров (sortHomeTournaments), чтобы карточка и первый турнир карусели
-// не спорили.
+// chooseFeatured — среди равных по статусу и дате: старший уровень, затем имя, как у карусели
+// турниров. Подписки карточка не учитывает, поэтому при них первый турнир карусели может
+// быть другим.
 func chooseFeatured(rows []featuredRow, tour Tour) featuredRow {
-	weight := func(r featuredRow) int {
-		if c := homeCategory(r.brand, tour, r.category); c != nil {
-			return categoryWeight[*c]
-		}
-		return 0
-	}
-	best := rows[0]
+	best, bestCat := rows[0], homeCategory(rows[0].brand, tour, rows[0].category)
 	for _, r := range rows[1:] {
-		if w, bw := weight(r), weight(best); w > bw || (w == bw && r.name < best.name) {
-			best = r
+		if c := homeCategory(r.brand, tour, r.category); aboveByLevel(c, bestCat, r.name, best.name) {
+			best, bestCat = r, c
 		}
 	}
 	return best
@@ -159,7 +153,7 @@ func currentRoundLabel(ctx context.Context, pool *pgxpool.Pool, lang, edition st
 		where te.slug = $1 and m.status in ('live', 'scheduled')
 		  and m.round_code !~* '^q[0-9]'
 		  and (m.status = 'live' or m.scheduled_at is null or m.scheduled_at >= $3)
-		  and (m.status = 'live' or `+notFinishedByIngest("m.id")+`)
+		  and (m.status = 'live' or `+notFinishedByIngest("m.id", "m.scheduled_at")+`)
 		order by case when m.status = 'live' then 0 else 1 end, ro.sort_order, m.id
 		limit 1`, edition, lang, notBefore).Scan(&label)
 	if errors.Is(err, pgx.ErrNoRows) {
