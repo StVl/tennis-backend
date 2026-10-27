@@ -36,13 +36,25 @@ func TestMatchFinishedByIngestIsNotNext(t *testing.T) {
 		}
 		return card, cover
 	}
+	round := func() string {
+		t.Helper()
+		label, err := currentRoundLabel(ctx, pool, "en", "zzt_slam_2026", now.Add(-liveStaleGrace))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return label
+	}
 	if card, cover := next(); card == nil || cover == nil {
 		t.Fatalf("до события матч должен быть ближайшим: card %v, cover %v", card, cover)
+	}
+	if round() == "" {
+		t.Fatal("до события у турнира должен быть текущий раунд")
 	}
 
 	if _, err := pool.Exec(ctx, `
 		insert into live_events (match_id, event, reason, created_at)
-		select id, 'finished', 'test', now() from matches where import_key = 'zzt_zzt_slam_2026'`); err != nil {
+		select id, 'finished', 'test', scheduled_at + interval '2 hours'
+		from matches where import_key = 'zzt_zzt_slam_2026'`); err != nil {
 		t.Fatal(err)
 	}
 	if card, cover := next(); card != nil || cover != nil {
@@ -50,6 +62,20 @@ func TestMatchFinishedByIngestIsNotNext(t *testing.T) {
 	}
 	if m, err := NextMatch(ctx, pool, "zzt_atp_man"); err != nil || m != nil {
 		t.Errorf("NextMatch = %v, %v; want nil", m, err)
+	}
+	if r := round(); r != "" {
+		t.Errorf("подпись раунда держится на сыгранном матче: %q", r)
+	}
+
+	// Выход из live без конца матча (пропуски в борте) и перенос на позже события: матч не
+	// сыгран, он снова ближайший.
+	if _, err := pool.Exec(ctx, `
+		update matches set scheduled_at = scheduled_at + interval '3 hours'
+		where import_key = 'zzt_zzt_slam_2026'`); err != nil {
+		t.Fatal(err)
+	}
+	if card, cover := next(); card == nil || cover == nil {
+		t.Errorf("перенесённый матч пропал: card %v, cover %v", card, cover)
 	}
 
 	// Подняли снова — это опять живой матч, прошлое событие его не прячет.

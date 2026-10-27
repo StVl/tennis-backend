@@ -21,7 +21,7 @@ Client references below were checked against `tennis-tracker` at `4df4968` (2026
 | 2 | `GET /v1/players/{a}/h2h/{b}` | Walkovers counted as wins/losses | Walkovers stay in `matches` but not in `wins`/`losses`, as ATP/WTA count them. `wins + losses` can now be less than `matches.count` |
 | 3 | `featured_tournament` | "Day N of M", "Starts tomorrow" and which tournament counts as ongoing were by UTC date | By the date in `?tz=`, the same date `tournaments[].day` already used. The two can no longer disagree in one response |
 | 4 | `featured_tournament.section_meta`, `lang=ru`, WTA | `"Swiatek победил"` | `"Swiatek победила"` |
-| 5 | `featured_tournament` | With several ongoing tournaments (most weeks), an arbitrary one, possibly different per request | Singles only. Among equals: higher category, then name, the same order as the `tournaments` carousel, so it matches the carousel's first card |
+| 5 | `featured_tournament` | With several ongoing tournaments (most weeks), an arbitrary one, possibly different per request | Singles only. Among equals: higher category, then name, the same tie-break as the `tournaments` carousel. The carousel puts tournaments with followed players first and the card doesn't, so with follows the two can still lead with different tournaments |
 | 6 | Widget `today_column`, `split` state | Cancelled matches counted as "today" and as "a followed player plays today" | Ignored |
 
 ### Why #1 happens at all
@@ -30,6 +30,8 @@ When the vendor says a match is over, the backend takes it out of `live` and put
 `scheduled`**. That's deliberate: only the content pipeline may write a result, and it can't be
 invented. But the pipeline delivers results with a lag, sometimes days. Until now that window showed
 a finished match as upcoming. The backend now remembers that it saw the end and hides the match.
+A match that leaves live without finishing (dropped off the vendor board, e.g. suspended overnight)
+gets the same record; once it is rescheduled to a later time it shows as upcoming again.
 There's still no result to show, so the row shows nothing about the match until the pipeline catches up.
 
 ### The one change users will notice — "Your week"
@@ -79,8 +81,8 @@ Follow `sinner` and watch the home card and widget while driving the fixture thr
 | reset | re-apply `db/dev_fixtures.sql` | the fixture again | match |
 
 This sequence was run against the backend on 2026-10-27 and produced exactly these rows. Get `{id}`
-from `GET /v1/matches?player=sinner&status=scheduled`. The reset also clears the fixture's `finished`
-event. Without that, it would stay hidden for 7 days.
+from `GET /v1/matches?player=sinner&status=scheduled`. The reset moves the fixture's time past its old
+`finished` event, and an end recorded before the scheduled time doesn't hide a match, so it comes back.
 
 To check #3, request `/v1/home?tz=Australia/Sydney` and `?tz=UTC` during Sydney's morning. The two
 differ by one day in both `featured_tournament.section_meta` and `tournaments[].day`, and inside each

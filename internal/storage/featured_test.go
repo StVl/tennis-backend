@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestTournamentDay(t *testing.T) {
+func TestLocalDay(t *testing.T) {
 	start := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)

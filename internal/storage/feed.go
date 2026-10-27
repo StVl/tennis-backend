@@ -96,17 +96,22 @@ type TodayMatch struct {
 // висевшие upcoming через 4 часа 44 минуты после назначенного времени.
 const liveStaleGrace = 12 * time.Hour
 
-// notFinishedByIngest — SQL-условие «ingest не видел конца этого матча»; matchID — колонка с id.
+// notFinishedByIngest — SQL-условие «ingest не видел конца этого матча».
 //
 // FlipOut возвращает строку пайплайна в 'scheduled': результат пишет только пайплайн, а он
 // приезжает с лагом. Без условия сыгранный матч до отсечки liveStaleGrace оставался бы
 // «ближайшим» — «играет сегодня» в заголовке, «Final today · 13:30» на обложке уже после финала.
-// Событие 'finished' пишет каждый выход из live, а вновь поднятый матч — снова live и условию
-// не подлежит. Обработанные события живут 7 дней (PruneLiveTables): дольше нужно только строкам
-// без scheduled_at, остальные к тому времени срезает отсечка.
-func notFinishedByIngest(matchID string) string {
+// Вновь поднятый матч — снова live и условию не подлежит.
+//
+// Считается только событие не раньше scheduled_at. 'finished' пишет каждый выход из live, не
+// только конец матча: три пропуска в борте, max_live_age, reconcile. Приостановленный на ночь
+// матч, выпавший из борта и перенесённый на завтра, иначе пропал бы до нового выхода в live, а
+// при PUSH_ENABLED=false навсегда — PruneLiveTables удаляет только обработанные пушером события.
+// Цена — матч, сыгранный целиком раньше назначенного времени, снова виден до отсечки.
+func notFinishedByIngest(matchID, scheduledAt string) string {
 	return `not exists (select 1 from live_events le
-		where le.match_id = ` + matchID + ` and le.event = 'finished')`
+		where le.match_id = ` + matchID + ` and le.event = 'finished'
+		  and (` + scheduledAt + ` is null or le.created_at >= ` + scheduledAt + `))`
 }
 
 // nextMatchPerPlayer — ближайший scheduled/live матч каждого игрока из списка.
@@ -141,7 +146,7 @@ func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
 		join tournaments t on t.id = te.tournament_id
 		where pl.slug = any($1) and vpm.status in ('scheduled', 'live')
 		  and (vpm.status = 'live' or vpm.scheduled_at is null or vpm.scheduled_at >= $2)
-		  and (vpm.status = 'live' or `+notFinishedByIngest("vpm.match_id")+`)
+		  and (vpm.status = 'live' or `+notFinishedByIngest("vpm.match_id", "vpm.scheduled_at")+`)
 		order by pl.slug, vpm.scheduled_at asc nulls last`,
 		slugs, notBefore)
 	if err != nil {

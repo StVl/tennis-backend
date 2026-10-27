@@ -99,12 +99,11 @@ func homeCategory(brand string, tour Tour, meta *string) *string {
 
 // localDay — номер дня турнира по местной дате пользователя.
 func localDay(today, start, end time.Time) (n, total int) {
-	d := calendarDate
-	total = int(d(end).Sub(d(start)).Hours()/24) + 1
+	total = int(calendarDate(end).Sub(calendarDate(start)).Hours()/24) + 1
 	if total < 1 {
 		total = 1
 	}
-	n = int(d(today).Sub(d(start)).Hours()/24) + 1
+	n = int(calendarDate(today).Sub(calendarDate(start)).Hours()/24) + 1
 	if n < 1 {
 		n = 1
 	}
@@ -128,18 +127,24 @@ func sortHomeTournaments(ts []HomeTournament) {
 		if a.FollowedCount != b.FollowedCount {
 			return a.FollowedCount > b.FollowedCount
 		}
-		wa, wb := 0, 0
-		if a.Category != nil {
-			wa = categoryWeight[*a.Category]
-		}
-		if b.Category != nil {
-			wb = categoryWeight[*b.Category]
-		}
-		if wa != wb {
-			return wa > wb
-		}
-		return a.Name < b.Name
+		return aboveByLevel(a.Category, b.Category, a.Name, b.Name)
 	})
+}
+
+// aboveByLevel — порядок среди равных и у карусели, и у featured (chooseFeatured): выше уровень,
+// затем имя. Один на двоих, чтобы правило не разошлось.
+func aboveByLevel(catA, catB *string, nameA, nameB string) bool {
+	wa, wb := 0, 0
+	if catA != nil {
+		wa = categoryWeight[*catA]
+	}
+	if catB != nil {
+		wb = categoryWeight[*catB]
+	}
+	if wa != wb {
+		return wa > wb
+	}
+	return nameA < nameB
 }
 
 // homeDay — границы «сегодня» и «вчера» у пользователя.
@@ -280,7 +285,7 @@ func nextMatchPerEdition(ctx context.Context, pool *pgxpool.Pool, editions []str
 		where te.slug = any($1) and m.status in ('scheduled', 'live')
 		  and m.round_code !~* '^q'
 		  and (m.status = 'live' or m.scheduled_at >= $2)
-		  and (m.status = 'live' or `+notFinishedByIngest("m.id")+`)
+		  and (m.status = 'live' or `+notFinishedByIngest("m.id", "m.scheduled_at")+`)
 		order by te.slug, case when m.status = 'live' then 0 else 1 end, m.scheduled_at nulls last`,
 		editions, notBefore)
 	if err != nil {
