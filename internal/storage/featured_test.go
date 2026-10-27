@@ -9,16 +9,88 @@ func TestTournamentDay(t *testing.T) {
 	start := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)
-	n, total := tournamentDay(now, start, end)
+	n, total := localDay(newHomeDay(now, time.UTC).today, start, end)
 	if n != 8 || total != 14 {
 		t.Fatalf("got day %d of %d, want 8 of 14", n, total)
+	}
+}
+
+// В Сиднее уже 6 июля, в UTC ещё 5-е: карточка должна сказать то же, что карусель турниров
+// в этом же ответе (она считает от местной даты), а не на день меньше.
+func TestFeaturedCopyUsesLocalDate(t *testing.T) {
+	sydney, err := time.LoadLocation("Australia/Sydney")
+	if err != nil {
+		t.Skip(err)
+	}
+	now := time.Date(2026, 7, 5, 22, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	day := newHomeDay(now, sydney)
+
+	_, meta, _ := featuredCopy(featuredInput{
+		lang: "en", today: day.today, status: "ongoing", drawStatus: "drawn",
+		start: start, end: end, surface: "grass",
+	})
+	carousel, _ := localDay(day.today, start, end)
+	if meta != "Day 8 of 14" || carousel != 8 {
+		t.Fatalf("featured %q, carousel day %d; want Day 8 of 14 in both", meta, carousel)
+	}
+
+	title, _, _ := featuredCopy(featuredInput{
+		lang: "en", today: day.today, status: "upcoming", drawStatus: "drawn",
+		start: time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC), end: end, surface: "hard",
+	})
+	if title != "Starts tomorrow" {
+		t.Fatalf("title %q: по местной дате старт завтра", title)
+	}
+}
+
+func TestFeaturedCopyChampionVerbByTour(t *testing.T) {
+	for _, c := range []struct {
+		tour Tour
+		want string
+	}{{TourATP, "Sinner победил"}, {TourWTA, "Swiatek победила"}} {
+		last := "Sinner"
+		if c.tour == TourWTA {
+			last = "Swiatek"
+		}
+		_, meta, _ := featuredCopy(featuredInput{
+			lang: "ru", tour: c.tour, today: time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+			status: "completed", drawStatus: "drawn",
+			start: time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC), end: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC),
+			championLast: last, surface: "grass",
+		})
+		if meta != c.want {
+			t.Errorf("%s: meta %q, want %q", c.tour, meta, c.want)
+		}
+	}
+}
+
+func TestChooseFeaturedPrefersCategoryThenName(t *testing.T) {
+	str := func(s string) *string { return &s }
+	pick := func(rows ...featuredRow) string { return chooseFeatured(rows, TourATP).edition }
+
+	vienna := featuredRow{edition: "vienna_2026", brand: "vienna", name: "Erste Bank Open"}
+	basel := featuredRow{edition: "basel_2026", brand: "basel", name: "Swiss Indoors Basel"}
+	if a, b := pick(vienna, basel), pick(basel, vienna); a != b || a != "vienna_2026" {
+		t.Errorf("два ATP 500: %s / %s, want vienna_2026 при любом порядке строк", a, b)
+	}
+
+	paris := featuredRow{edition: "paris_masters_2026", brand: "paris_masters", name: "Rolex Paris Masters"}
+	if got := pick(vienna, paris); got != "paris_masters_2026" {
+		t.Errorf("Masters против 500: %s", got)
+	}
+
+	unknown := featuredRow{edition: "zzt_2026", brand: "zzt", name: "A", category: str("ATP 1000")}
+	if got := pick(vienna, unknown); got != "zzt_2026" {
+		t.Errorf("категория из metadata должна учитываться: %s", got)
 	}
 }
 
 func TestFeaturedCopyOngoing(t *testing.T) {
 	title, meta, stage := featuredCopy(featuredInput{
 		lang:       "en",
-		now:        time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		today:      time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
 		status:     "ongoing",
 		drawStatus: "drawn",
 		start:      time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC),
@@ -33,7 +105,7 @@ func TestFeaturedCopyOngoing(t *testing.T) {
 
 	title, _, _ = featuredCopy(featuredInput{
 		lang:       "ru",
-		now:        time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		today:      time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
 		status:     "ongoing",
 		drawStatus: "drawn",
 		start:      time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC),
@@ -49,7 +121,7 @@ func TestFeaturedCopyAwaitingDraw(t *testing.T) {
 	draw := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
 	title, meta, stage := featuredCopy(featuredInput{
 		lang:       "en",
-		now:        time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		today:      time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
 		status:     "upcoming",
 		drawStatus: "awaiting_draw",
 		start:      time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
@@ -66,7 +138,7 @@ func TestFeaturedCopyAwaitingDraw(t *testing.T) {
 func TestFeaturedCopyStartsTomorrow(t *testing.T) {
 	title, meta, stage := featuredCopy(featuredInput{
 		lang:       "en",
-		now:        time.Date(2026, 8, 9, 18, 0, 0, 0, time.UTC),
+		today:      time.Date(2026, 8, 9, 18, 0, 0, 0, time.UTC),
 		status:     "upcoming",
 		drawStatus: "drawn",
 		start:      time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
@@ -82,7 +154,7 @@ func TestFeaturedCopyStartsTomorrow(t *testing.T) {
 func TestFeaturedCopyJustFinished(t *testing.T) {
 	title, meta, _ := featuredCopy(featuredInput{
 		lang:         "en",
-		now:          time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+		today:        time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
 		status:       "completed",
 		drawStatus:   "drawn",
 		start:        time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC),
@@ -98,7 +170,7 @@ func TestFeaturedCopyJustFinished(t *testing.T) {
 func TestFeaturedCopyIndoorHard(t *testing.T) {
 	_, _, stage := featuredCopy(featuredInput{
 		lang:       "en",
-		now:        time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		today:      time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
 		status:     "upcoming",
 		drawStatus: "awaiting_draw",
 		start:      time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC),

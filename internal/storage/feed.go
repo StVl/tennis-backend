@@ -96,6 +96,19 @@ type TodayMatch struct {
 // висевшие upcoming через 4 часа 44 минуты после назначенного времени.
 const liveStaleGrace = 12 * time.Hour
 
+// notFinishedByIngest — SQL-условие «ingest не видел конца этого матча»; matchID — колонка с id.
+//
+// FlipOut возвращает строку пайплайна в 'scheduled': результат пишет только пайплайн, а он
+// приезжает с лагом. Без условия сыгранный матч до отсечки liveStaleGrace оставался бы
+// «ближайшим» — «играет сегодня» в заголовке, «Final today · 13:30» на обложке уже после финала.
+// Событие 'finished' пишет каждый выход из live, а вновь поднятый матч — снова live и условию
+// не подлежит. Обработанные события живут 7 дней (PruneLiveTables): дольше нужно только строкам
+// без scheduled_at, остальные к тому времени срезает отсечка.
+func notFinishedByIngest(matchID string) string {
+	return `not exists (select 1 from live_events le
+		where le.match_id = ` + matchID + ` and le.event = 'finished')`
+}
+
 // nextMatchPerPlayer — ближайший scheduled/live матч каждого игрока из списка.
 //
 // notBefore отсекает протухшие строки. Без него любой scheduled-матч с датой в
@@ -128,6 +141,7 @@ func nextMatchPerPlayer(ctx context.Context, pool *pgxpool.Pool, slugs []string,
 		join tournaments t on t.id = te.tournament_id
 		where pl.slug = any($1) and vpm.status in ('scheduled', 'live')
 		  and (vpm.status = 'live' or vpm.scheduled_at is null or vpm.scheduled_at >= $2)
+		  and (vpm.status = 'live' or `+notFinishedByIngest("vpm.match_id")+`)
 		order by pl.slug, vpm.scheduled_at asc nulls last`,
 		slugs, notBefore)
 	if err != nil {
@@ -411,7 +425,7 @@ func GetHomeFeed(ctx context.Context, pool *pgxpool.Pool, lang string, followed 
 		})
 	}
 
-	featured, err := loadFeaturedTournament(ctx, pool, lang, now, tour)
+	featured, err := loadFeaturedTournament(ctx, pool, lang, day, tour)
 	if err != nil {
 		return nil, err
 	}
@@ -624,9 +638,12 @@ func widgetRows(ctx context.Context, pool *pgxpool.Pool, followed []string, loc 
 		rows[i] = s.row
 	}
 
-	// split: никто из подписок не играет сегодня, но сегодня есть чужие матчи
+	// split: никто из подписок не играет сегодня, но сегодня есть чужие матчи.
+	// Без cancelled: отменённый матч сегодня не играется — в том числе строки, которые ingest
+	// создал из фикстур и после конца перевёл в cancelled.
 	todayMatches, err := ListMatches(ctx, pool, MatchFilter{
-		DayFrom: &dayFrom, DayTo: &dayTo, SortByRank: true, Limit: 100,
+		Statuses: []string{"scheduled", "live", "completed"},
+		DayFrom:  &dayFrom, DayTo: &dayTo, SortByRank: true, Limit: 100,
 	})
 	if err != nil {
 		return nil, err

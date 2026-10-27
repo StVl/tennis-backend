@@ -25,19 +25,22 @@ type FeaturedTournament struct {
 }
 
 type featuredInput struct {
-	lang          string
-	now           time.Time
-	status        string // upcoming | ongoing | completed
-	drawStatus    string // awaiting_draw | drawn
-	start, end    time.Time
-	drawDate      *time.Time
-	roundLabel    string
-	tournament    string // brand slug
-	name          string
-	surface       string
-	indoor        bool
-	championLast  string
-	category      string
+	lang string
+	// Местная полночь пользователя (?tz=). От неё «день N» и «старт завтра» — как у карусели
+	// турниров в том же ответе; по UTC они расходились бы у всех, кто далеко от Гринвича.
+	today        time.Time
+	tour         Tour
+	status       string // upcoming | ongoing | completed
+	drawStatus   string // awaiting_draw | drawn
+	start, end   time.Time
+	drawDate     *time.Time
+	roundLabel   string
+	tournament   string // brand slug
+	name         string
+	surface      string
+	indoor       bool
+	championLast string
+	category     string
 }
 
 func featuredCopy(in featuredInput) (title, meta, stage string) {
@@ -46,7 +49,7 @@ func featuredCopy(in featuredInput) (title, meta, stage string) {
 
 	switch {
 	case in.status == "ongoing":
-		n, total := tournamentDay(in.now, in.start, in.end)
+		n, total := localDay(in.today, in.start, in.end)
 		title = pick(in.lang, "On court now", "Идёт турнир")
 		meta = fmt.Sprintf(pick(in.lang, "Day %d of %d", "День %d из %d"), n, total)
 		if in.roundLabel != "" {
@@ -63,44 +66,25 @@ func featuredCopy(in featuredInput) (title, meta, stage string) {
 	case in.status == "completed":
 		title = pick(in.lang, "Just finished", "Только что")
 		if in.championLast != "" {
-			meta = pick(in.lang, in.championLast+" won", in.championLast+" победил")
+			won := "победил"
+			if in.tour == TourWTA {
+				won = "победила"
+			}
+			meta = pick(in.lang, in.championLast+" won", in.championLast+" "+won)
 		}
 		stage = categoryLine
 	default:
 		// Draw published, play not started.
-		title = startsTitle(in.lang, in.now, in.start)
+		title = startsTitle(in.lang, in.today, in.start)
 		meta = pick(in.lang, "Main draw set", "Сетка готова")
 		stage = categoryLine
 	}
 	return title, meta, stage
 }
 
-func tournamentDay(now, start, end time.Time) (n, total int) {
-	startDay := truncateUTCDate(start)
-	endDay := truncateUTCDate(end)
-	nowDay := truncateUTCDate(now)
-	total = int(endDay.Sub(startDay).Hours()/24) + 1
-	if total < 1 {
-		total = 1
-	}
-	n = int(nowDay.Sub(startDay).Hours()/24) + 1
-	if n < 1 {
-		n = 1
-	}
-	if n > total {
-		n = total
-	}
-	return n, total
-}
-
-func truncateUTCDate(t time.Time) time.Time {
-	u := t.UTC()
-	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
-}
-
-func startsTitle(lang string, now, start time.Time) string {
-	nowDay := truncateUTCDate(now)
-	startDay := truncateUTCDate(start)
+func startsTitle(lang string, today, start time.Time) string {
+	nowDay := calendarDate(today)
+	startDay := calendarDate(start)
 	tomorrow := nowDay.AddDate(0, 0, 1)
 	if startDay.Equal(tomorrow) {
 		return pick(lang, "Starts tomorrow", "Старт завтра")
