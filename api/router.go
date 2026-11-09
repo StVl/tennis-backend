@@ -63,6 +63,7 @@ func NewRouter(pool *pgxpool.Pool, cfg HandlerConfig) http.Handler {
 			r.Delete("/follows/{slug}", handler.RemoveFollow)
 			r.Get("/home", handler.MyHome)
 			r.Get("/widget", handler.MyWidget)
+			r.Get("/picks", handler.MyPicks)
 			r.Get("/live-matches", handler.MyLiveMatches)
 			r.Put("/push-token", handler.RegisterPushToken)
 			r.Put("/live-activities/{id}", handler.RegisterActivityToken)

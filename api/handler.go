@@ -27,6 +27,8 @@ type HandlerConfig struct {
 	// Включена ли лига WTA на клиенте (переключатель лиг, табы онбординга). Данные WTA сервер
 	// отдаёт всегда; флаг решает только, показывает ли их приложение.
 	WTA bool
+	// Игра Daily picks. Выключена — /v1/users/me/picks отдаёт пустой список дней.
+	DailyPicks bool
 }
 
 type Handler struct {
