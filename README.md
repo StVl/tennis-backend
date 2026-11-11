@@ -455,6 +455,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "localhost:8080/v1/users/me/widget?tz=
 - **`lock_at`** = `scheduled_at`: клиент закрывает выбор в `min(lock_at, момент, когда увидел live)`.
 - **`score_text`** — со стороны победителя (`6-4, 7-5`); live-счёта нет. `h2h` — победы `players[0]` и `players[1]` до этого матча, `null` — не встречались.
 - **`next_round`** — пары следующего раунда для блока «Up next»: каждый слот — один матч раунда дня (`candidates` — оба игрока, `winner_slug` — когда сыгран). В финале `next_round = null`, `champion_slug` — победитель.
+- **`tournament_day`** — номер дня турнира на эту дату, как в шапке Home (`Day 4`): от `start_date` розыгрыша, не больше его длины.
 
 ```json
 {"days": [{
@@ -466,7 +467,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "localhost:8080/v1/users/me/widget?tz=
     "players": [{"slug": "rune", "first_name": "Holger", "last_name": "Rune", "rank": 11, "photo_url": null}, {"...": "..."}],
     "h2h": [2, 1]}],
   "next_round": {"round": "QF", "pairs": [[{"candidates": ["rune", "fils"], "winner_slug": null}, {"candidates": ["shelton", "tien"], "winner_slug": null}]]},
-  "champion_slug": null
+  "champion_slug": null, "tournament_day": 3
 }]}
 ```
 

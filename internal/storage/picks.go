@@ -30,6 +30,8 @@ type PicksDay struct {
 	Matches        []PicksMatch    `json:"matches"`
 	NextRound      *PicksNextRound `json:"next_round"`
 	ChampionSlug   *string         `json:"champion_slug"`
+	// TournamentDay — день турнира на эту дату, как в шапке Home («Day 5»): от start_date розыгрыша.
+	TournamentDay int `json:"tournament_day"`
 }
 
 type PicksMatch struct {
@@ -72,8 +74,10 @@ type picksRow struct {
 	cand    pickCandidate
 	country string
 	surface string
-	sets    [][]*int
-	players [2]PicksPlayer
+	// start, end — даты розыгрыша, для номера дня турнира.
+	start, end time.Time
+	sets       [][]*int
+	players    [2]PicksPlayer
 }
 
 // GetPicksDays — игровые дни тура на вчера, сегодня и завтра (по местной дате турнира),
@@ -164,6 +168,9 @@ func buildPicksDay(ctx context.Context, pool *pgxpool.Pool, tour Tour, date stri
 		Edition: first.cand.Edition, TournamentName: first.cand.Name, Category: first.cand.Category,
 		Surface: first.surface, Matches: make([]PicksMatch, 0, len(chosen)),
 	}
+	if d, err := time.Parse("2006-01-02", date); err == nil {
+		day.TournamentDay, _ = localDay(d, first.start, first.end)
+	}
 	roundCount := map[string]int{}
 	for i, c := range chosen {
 		r := byID[c.MatchID]
@@ -226,7 +233,7 @@ func winnerSets(sets [][]*int, winnerSide int) [][]*int {
 
 const picksCandidatesQuery = `
 	select m.id, te.slug, t.slug, t.name, coalesce(t.country_code, ''), m.round_code,
-	       coalesce(te.metadata->>'category', ''), te.surface::text,
+	       coalesce(te.metadata->>'category', ''), te.surface::text, te.start_date, te.end_date,
 	       m.scheduled_at, m.status::text, m.outcome::text, m.winner_side, m.bracket_pos,
 	       coalesce(parts.j::text, '[]'), coalesce(sets.j::text, '[]')
 	from matches m
@@ -281,7 +288,7 @@ func loadPicksCandidates(ctx context.Context, pool *pgxpool.Pool, tour Tour, now
 			outcome             *string
 		)
 		if err := rows.Scan(&r.cand.MatchID, &r.cand.Edition, &r.cand.Brand, &r.cand.Name, &r.country,
-			&r.cand.Round, &category, &r.surface, &r.cand.ScheduledAt, &r.cand.Status, &outcome,
+			&r.cand.Round, &category, &r.surface, &r.start, &r.end, &r.cand.ScheduledAt, &r.cand.Status, &outcome,
 			&r.cand.WinnerSide, &r.cand.BracketPos, &partsJSON, &setsJSON); err != nil {
 			return nil, err
 		}

@@ -109,6 +109,10 @@ func TestPicks_BuildsTomorrowFromFixture(t *testing.T) {
 	if d.ID != "atp-2026-11-11" || d.League != "atp" || d.Round != "R16" || d.Category == nil || *d.Category != "ATP 250" {
 		t.Fatalf("day header = %+v", d)
 	}
+	// Розыгрыш с 2026-11-08: 11-11 — четвёртый день.
+	if d.TournamentDay != 4 {
+		t.Fatalf("tournament_day = %d, want 4", d.TournamentDay)
+	}
 	if len(d.Matches) != 6 {
 		t.Fatalf("matches = %d, want 6", len(d.Matches))
 	}
