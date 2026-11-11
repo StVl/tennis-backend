@@ -11,12 +11,13 @@ type ClientConfig struct {
 type Features struct {
 	PaidSubscriptions bool `json:"paid_subscriptions"`
 	WTA               bool `json:"wta"`
+	DailyPicks        bool `json:"daily_picks"`
 }
 
 // AppConfig не ходит в БД: флаги берутся из env на старте, и ответ должен
 // приходить, даже когда база недоступна.
 func (h *Handler) AppConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ClientConfig{
-		Features: Features{PaidSubscriptions: h.cfg.PaidSubscriptions, WTA: h.cfg.WTA},
+		Features: Features{PaidSubscriptions: h.cfg.PaidSubscriptions, WTA: h.cfg.WTA, DailyPicks: h.cfg.DailyPicks},
 	})
 }

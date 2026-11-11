@@ -203,6 +203,7 @@ func run() error {
 			LiveMaxLiveAge:    cfg.Live.MaxLiveAge,
 			PaidSubscriptions: cfg.PaidSubscriptions,
 			WTA:               cfg.WTA,
+			DailyPicks:        cfg.DailyPicks,
 		}),
 	}
 

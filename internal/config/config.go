@@ -28,6 +28,8 @@ type Config struct {
 	Push              PushConfig
 	// Лига WTA в приложении. По умолчанию НЕТ: включается, когда WTA-данные живут в проде.
 	WTA bool
+	// Игра Daily picks. По умолчанию НЕТ.
+	DailyPicks bool
 }
 
 func Load() (*Config, error) {
@@ -72,6 +74,7 @@ func Load() (*Config, error) {
 		LiveMatchesLimit:  envInt("LIVE_MATCHES_LIMIT", 50),
 		PaidSubscriptions: envBool("PAID_SUBSCRIPTIONS_ENABLED", false),
 		WTA:               envBool("FEATURE_WTA", false),
+		DailyPicks:        envBool("FEATURE_DAILY_PICKS", false),
 		Live:              live,
 		Push:              push,
 	}, nil

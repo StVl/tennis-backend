@@ -151,10 +151,10 @@ DATABASE_URL="postgresql://user:pass@host:port/db" go run ./cmd/server
 ### `GET /v1/config`
 
 ```json
-{"features": {"paid_subscriptions": false}}
+{"features": {"paid_subscriptions": false, "wta": false, "daily_picks": false}}
 ```
 
-`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные. `wta` — показывать ли лигу WTA (`FEATURE_WTA`, по умолчанию выключена).
+`paid_subscriptions` — включены ли платные подписки (`PAID_SUBSCRIPTIONS_ENABLED`, по умолчанию выключены). Флаг читается из env на старте, поэтому переключение переменной на Railway перезапускает сервис. Все ключи приходят всегда, включая выключенные. `wta` — показывать ли лигу WTA (`FEATURE_WTA`, по умолчанию выключена). `daily_picks` — игра Daily picks (`FEATURE_DAILY_PICKS`, по умолчанию выключена; выключена — `/v1/users/me/picks` отдаёт пустой список).
 
 ## Композитные (один запрос = один экран)
 
@@ -444,6 +444,30 @@ TOKEN=$(curl -s -X POST localhost:8080/v1/users -d '{"device_id":"dev1"}' | jq -
 curl -s -X PUT -H "Authorization: Bearer $TOKEN" localhost:8080/v1/users/me/follows \
   -d '{"player_slugs":["sinner","alcaraz"]}'
 curl -s -H "Authorization: Bearer $TOKEN" "localhost:8080/v1/users/me/widget?tz=Europe/Belgrade"
+```
+
+### `GET /v1/users/me/picks?tour=atp&pinned=101,102,103`
+Игра Daily picks: игровые дни лиги на вчера, сегодня и завтра по **местной дате турнира** (зона — по бренду, иначе по стране турнира, иначе UTC), старые первыми. Сервер только собирает день; выборы пользователя хранятся на устройстве.
+
+- **Отбор (на каждую дату).** Матчи: одиночка основной сетки (без `Q1–Q3`, круговой этап считается), оба игрока известны, `scheduled_at` не null — точное время не нужно, нужен день. Турнир: с матчем подписки → выше категория → больше матчей. Матчи: сначала с подпиской, потом по лучшему рангу пары; берутся 6, меньше 3 — дня нет. Порядок показа — по `scheduled_at`. Статус в отбор не входит, поэтому список не меняется, когда матчи начинаются.
+- **`pinned`** (до 6 id) — матчи дня, который у клиента уже начался: для его даты список берётся из них, а не отбирается заново (смена подписок посреди дня не меняет игру). Кривое значение → `400 bad_pinned`.
+- **`status`**: `scheduled | live | finished | void`. `void_reason`: `walkover`, `cancelled`, `unplayed` (не сыгран к 04:00 местного времени следующего дня). Снятие по ходу матча — обычный результат.
+- **`lock_at`** = `scheduled_at`: клиент закрывает выбор в `min(lock_at, момент, когда увидел live)`.
+- **`score_text`** — со стороны победителя (`6-4, 7-5`); live-счёта нет. `h2h` — победы `players[0]` и `players[1]` до этого матча, `null` — не встречались.
+- **`next_round`** — пары следующего раунда для блока «Up next»: каждый слот — один матч раунда дня (`candidates` — оба игрока, `winner_slug` — когда сыгран). В финале `next_round = null`, `champion_slug` — победитель.
+
+```json
+{"days": [{
+  "id": "atp-2026-11-10", "league": "atp", "date": "2026-11-10",
+  "edition": "stockholm_2026", "tournament_name": "Stockholm Open", "category": "ATP 250",
+  "surface": "hard", "round": "R16", "final_round": false,
+  "matches": [{"match_id": 101, "order": 0, "round": "R16", "lock_at": "2026-11-10T12:00:00Z",
+    "status": "scheduled", "void_reason": null, "winner_slug": null, "score_text": null,
+    "players": [{"slug": "rune", "first_name": "Holger", "last_name": "Rune", "rank": 11, "photo_url": null}, {"...": "..."}],
+    "h2h": [2, 1]}],
+  "next_round": {"round": "QF", "pairs": [[{"candidates": ["rune", "fils"], "winner_slug": null}, {"candidates": ["shelton", "tien"], "winner_slug": null}]]},
+  "champion_slug": null
+}]}
 ```
 
 ## Структура кода
