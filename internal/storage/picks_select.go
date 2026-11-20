@@ -11,7 +11,9 @@ import (
 // статус для игры.
 
 const (
-	picksMinMatches = 3
+	// 2, не 3: иначе без игры остаются итоговые турниры (ATP/WTA Finals — по 2 одиночки в
+	// день), полуфинальные дни и дни с дождём. Слабая игра лучше, чем никакой.
+	picksMinMatches = 2
 	picksMaxMatches = 6
 	// Матч, не сыгранный к 04:00 местного времени следующего дня, аннулируется (§4.2).
 	picksVoidHour = 4
@@ -54,7 +56,7 @@ func gameDayDate(c pickCandidate, zone *time.Location) civilDate {
 
 // selectGameDay — §2.1 (турнир) и §2.2 (матчи). Кандидаты — матчи одного тура на один
 // игровой день. Турнир: с подпиской → выше уровень → больше матчей → имя. Матчи: сначала с
-// подпиской, потом по лучшему рангу пары; берём 6, нужно минимум 3; показываем по времени.
+// подпиской, потом по лучшему рангу пары; берём 6, нужно минимум 2; показываем по времени.
 func selectGameDay(cands []pickCandidate) (edition string, chosen []pickCandidate, ok bool) {
 	type group struct {
 		edition, name string

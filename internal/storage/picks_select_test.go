@@ -80,13 +80,23 @@ func TestSelectGameDay_CategoryThenCount(t *testing.T) {
 	}
 }
 
-func TestSelectGameDay_FewerThanThree(t *testing.T) {
+func TestSelectGameDay_TwoMatchesMakeADay(t *testing.T) {
+	// Итоговый турнир: 2 одиночки в день — уже игра.
 	cs := []pickCandidate{
-		pkCand(1, "metz_2026", "metz", "ATP 250", pkHours(1), 1, 2, true),
-		pkCand(2, "metz_2026", "metz", "ATP 250", pkHours(2), 1, 2, false),
+		pkCand(1, "atp_finals_2026", "atp_finals", "ATP Finals", pkHours(1), 1, 2, true),
+		pkCand(2, "atp_finals_2026", "atp_finals", "ATP Finals", pkHours(2), 3, 4, false),
 	}
+	ed, chosen, ok := selectGameDay(cs)
+	if !ok || ed != "atp_finals_2026" {
+		t.Fatalf("edition = %q ok=%v, want atp_finals_2026", ed, ok)
+	}
+	eqIDs(t, ids(chosen), []int64{1, 2})
+}
+
+func TestSelectGameDay_OneMatchIsNoDay(t *testing.T) {
+	cs := []pickCandidate{pkCand(1, "metz_2026", "metz", "ATP 250", pkHours(1), 1, 2, true)}
 	if _, _, ok := selectGameDay(cs); ok {
-		t.Fatal("2 matches must not make a game day")
+		t.Fatal("1 match must not make a game day")
 	}
 }
 
